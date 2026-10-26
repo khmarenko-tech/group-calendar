@@ -15,11 +15,13 @@ if (-not $apk) {
 }
 
 $tag = "v$version"
+$asset = Join-Path $env:TEMP "group-calendar-$version.apk"
+Copy-Item -LiteralPath $apk.FullName -Destination $asset -Force
 $notes = "Версия $version. Ставится поверх прошлой. Если телефон отказывается обновлять, поднимите releaseCode в app\build.gradle.kts."
 gh release view $tag *> $null
 if ($LASTEXITCODE -eq 0) {
-    gh release upload $tag $apk.FullName --clobber
+    gh release upload $tag $asset --clobber
 } else {
-    gh release create $tag $apk.FullName --title "Календарь группы $version" --notes $notes
+    gh release create $tag $asset --title "Календарь группы $version" --notes $notes
 }
 gh release view $tag --json url --jq .url
