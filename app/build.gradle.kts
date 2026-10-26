@@ -9,8 +9,8 @@ if (firebaseConfigured) {
     apply(plugin = "com.google.gms.google-services")
 }
 
-val releaseVersion = "1.0.1"
-val releaseCode = 2
+val releaseVersion = "1.0.2"
+val releaseCode = 3
 
 android {
     namespace = "ru.sostav"

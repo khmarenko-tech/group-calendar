@@ -4,10 +4,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -73,6 +77,69 @@ fun StatusChip(status: Availability?) {
             .background(background, RoundedCornerShape(8.dp))
             .padding(horizontal = 10.dp, vertical = 6.dp),
     )
+}
+
+@Composable
+fun concertColor(status: ConcertStatus): Color = when (status) {
+    ConcertStatus.CONFIRMED -> MaterialTheme.colorScheme.primary
+    ConcertStatus.IDEA -> MaterialTheme.colorScheme.tertiary
+    ConcertStatus.CANCELLED -> MaterialTheme.colorScheme.outline
+}
+
+@Composable
+fun concertOnColor(status: ConcertStatus): Color = when (status) {
+    ConcertStatus.CONFIRMED -> MaterialTheme.colorScheme.onPrimary
+    ConcertStatus.IDEA -> MaterialTheme.colorScheme.onTertiary
+    ConcertStatus.CANCELLED -> MaterialTheme.colorScheme.onSurface
+}
+
+@Composable
+fun availabilityDot(status: Availability?): Color {
+    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+    return when (status) {
+        Availability.CANNOT -> MaterialTheme.colorScheme.error
+        Availability.MAYBE -> if (dark) Color(0xFFFBBF24) else Color(0xFFB45309)
+        Availability.CAN -> if (dark) Color(0xFF6EE7B7) else Color(0xFF047857)
+        null -> MaterialTheme.colorScheme.outline
+    }
+}
+
+@Composable
+fun StripeRow(
+    title: String,
+    subtitle: String,
+    stripe: Color,
+    onClick: () -> Unit,
+    trailing: @Composable (() -> Unit)? = null,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            Modifier
+                .width(4.dp)
+                .height(36.dp)
+                .background(stripe, RoundedCornerShape(2.dp)),
+        )
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 2)
+            if (subtitle.isNotBlank()) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                )
+            }
+        }
+        trailing?.invoke()
+    }
 }
 
 @Composable

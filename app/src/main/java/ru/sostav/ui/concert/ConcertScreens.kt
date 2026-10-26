@@ -50,6 +50,8 @@ import ru.sostav.ui.GroupDataViewModel
 import ru.sostav.ui.components.ChoiceButtons
 import ru.sostav.ui.components.ConcertChip
 import ru.sostav.ui.components.ConfirmDialog
+import ru.sostav.ui.components.StripeRow
+import ru.sostav.ui.components.concertColor
 import ru.sostav.ui.components.DateField
 import ru.sostav.ui.components.EmptyText
 import ru.sostav.ui.components.InboxButton
@@ -97,25 +99,16 @@ fun ConcertListScreen(
 private fun ConcertRow(concert: Concert, data: GroupDataViewModel, onOpen: (String) -> Unit) {
     val memberIds = data.members.map { it.uid }.toSet()
     val blocked = blockingAbsences(data.absences, concert.date, concert.part).count { it.uid in memberIds }
-    OutlinedButton(
+    val place = listOf(concert.city, concert.venue).filter { it.isNotBlank() }.joinToString(", ")
+    val whenText = "${concert.date.ruDay()}, ${concert.part.ru().lowercase()}"
+    val blockedText = if (blocked > 0 && concert.status != ConcertStatus.CANCELLED) "Не могут: $blocked" else ""
+    StripeRow(
+        title = concert.title,
+        subtitle = listOf(whenText, place, blockedText).filter { it.isNotBlank() }.joinToString(" · "),
+        stripe = concertColor(concert.status),
         onClick = { onOpen(concert.id) },
-        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-    ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(concert.title, style = MaterialTheme.typography.bodyLarge)
-            Text(
-                "${concert.date.ruDay()}, ${concert.part.ru().lowercase()}" +
-                    listOf(concert.city, concert.venue).filter { it.isNotBlank() }.joinToString(", ").let { place ->
-                        if (place.isBlank()) "" else ", $place"
-                    },
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            if (blocked > 0 && concert.status != ConcertStatus.CANCELLED) {
-                Text("Не могут: $blocked", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
-            }
-        }
-        ConcertChip(concert.status)
-    }
+        trailing = { ConcertChip(concert.status) },
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
