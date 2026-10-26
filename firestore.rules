@@ -1,0 +1,223 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function memberPath(groupId, uid) {
+      return /databases/$(database)/documents/groups/$(groupId)/members/$(uid);
+    }
+
+    function groupPath(groupId) {
+      return /databases/$(database)/documents/groups/$(groupId);
+    }
+
+    function isMember(groupId) {
+      return signedIn() && exists(memberPath(groupId, request.auth.uid));
+    }
+
+    function isAdmin(groupId) {
+      return isMember(groupId)
+        && get(memberPath(groupId, request.auth.uid)).data.role == "admin";
+    }
+
+    function validName(value) {
+      return value is string && value.size() > 0 && value.size() < 60;
+    }
+
+    function noGroup(data) {
+      return !data.keys().hasAny(["groupId"]) || data.groupId == null;
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && noGroup(request.resource.data)
+        && request.resource.data.email is string
+        && validName(request.resource.data.displayName);
+
+      allow update: if signedIn() && (
+        (
+          request.auth.uid == uid
+          && request.resource.data.email == resource.data.email
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly(["displayName", "groupId"])
+          && validName(request.resource.data.displayName)
+          && (
+            (noGroup(request.resource.data) && noGroup(resource.data))
+            || (
+              request.resource.data.keys().hasAny(["groupId"])
+              && resource.data.keys().hasAny(["groupId"])
+              && request.resource.data.groupId == resource.data.groupId
+            )
+            || (
+              noGroup(resource.data)
+              && request.resource.data.keys().hasAny(["groupId"])
+              && request.resource.data.groupId is string
+              && exists(memberPath(request.resource.data.groupId, uid))
+            )
+            || (
+              noGroup(request.resource.data)
+              && resource.data.keys().hasAny(["groupId"])
+              && resource.data.groupId is string
+              && !exists(memberPath(resource.data.groupId, uid))
+            )
+          )
+        )
+        || (
+          request.auth.uid != uid
+          && resource.data.keys().hasAny(["groupId"])
+          && resource.data.groupId is string
+          && noGroup(request.resource.data)
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly(["groupId"])
+          && isAdmin(resource.data.groupId)
+        )
+      );
+
+      match /tokens/{token} {
+        allow read, write: if signedIn() && request.auth.uid == uid;
+      }
+
+      match /inbox/{noticeId} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow delete: if signedIn()
+          && (request.auth.uid == uid || resource.data.fromUid == request.auth.uid);
+        allow update: if signedIn() && (
+          (
+            request.auth.uid == uid
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly(["read"])
+          )
+          || (
+            resource.data.fromUid == request.auth.uid
+            && request.resource.data.fromUid == request.auth.uid
+            && request.resource.data.toUid == uid
+            && request.resource.data.groupId == resource.data.groupId
+          )
+        );
+        allow create: if signedIn()
+          && request.resource.data.toUid == uid
+          && request.resource.data.fromUid == request.auth.uid
+          && request.resource.data.read == false
+          && request.resource.data.title is string
+          && request.resource.data.body is string
+          && request.resource.data.groupId is string
+          && exists(memberPath(request.resource.data.groupId, request.auth.uid))
+          && exists(memberPath(request.resource.data.groupId, uid));
+      }
+    }
+
+    match /inviteCodes/{code} {
+      allow get: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.groupId is string
+        && request.resource.data.groupName is string
+        && isAdmin(request.resource.data.groupId);
+      allow update: if signedIn()
+        && isAdmin(resource.data.groupId)
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(["groupName"]);
+      allow delete: if signedIn() && isAdmin(resource.data.groupId);
+    }
+
+    match /groups/{groupId} {
+      allow get: if isMember(groupId);
+      allow create: if signedIn()
+        && request.resource.data.createdBy == request.auth.uid
+        && validName(request.resource.data.name)
+        && request.resource.data.inviteCode is string
+        && request.resource.data.inviteCode.size() == 6
+        && request.resource.data.openAdminSlot == true
+        && noGroup(get(/databases/$(database)/documents/users/$(request.auth.uid)).data);
+      allow update: if isAdmin(groupId)
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(["name", "inviteCode", "openAdminSlot"])
+        && (
+          !("openAdminSlot" in request.resource.data.diff(resource.data).changedKeys())
+          || (resource.data.openAdminSlot == true && request.resource.data.openAdminSlot == false)
+        )
+        && validName(request.resource.data.name);
+      allow delete: if signedIn()
+        && resource.data.createdBy == request.auth.uid
+        && resource.data.openAdminSlot == true;
+
+      match /members/{memberId} {
+        allow read: if isMember(groupId);
+        allow create: if signedIn()
+          && request.auth.uid == memberId
+          && validName(request.resource.data.displayName)
+          && request.resource.data.email is string
+          && noGroup(get(/databases/$(database)/documents/users/$(request.auth.uid)).data)
+          && (
+            (
+              request.resource.data.role == "admin"
+              && get(groupPath(groupId)).data.createdBy == request.auth.uid
+              && get(groupPath(groupId)).data.openAdminSlot == true
+            )
+            || (
+              request.resource.data.role == "member"
+              && request.resource.data.usedCode is string
+              && get(/databases/$(database)/documents/inviteCodes/$(request.resource.data.usedCode)).data.groupId == groupId
+            )
+          );
+        allow update: if isMember(groupId) && (
+          (
+            isAdmin(groupId)
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly(["role"])
+            && request.resource.data.role in ["admin", "member"]
+          )
+          || (
+            request.auth.uid == memberId
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly(["displayName"])
+            && validName(request.resource.data.displayName)
+          )
+        );
+        allow delete: if isAdmin(groupId) || (signedIn() && request.auth.uid == memberId);
+      }
+
+      match /absences/{absenceId} {
+        allow read: if isMember(groupId);
+        allow create, update: if isMember(groupId)
+          && request.resource.data.uid == request.auth.uid
+          && (resource == null || resource.data.uid == request.auth.uid)
+          && request.resource.data.startDate is string
+          && request.resource.data.endDate is string
+          && request.resource.data.endDate >= request.resource.data.startDate
+          && request.resource.data.status in ["can", "cannot", "maybe"]
+          && request.resource.data.parts is list
+          && request.resource.data.parts.size() > 0
+          && request.resource.data.parts.hasOnly(["morning", "afternoon", "evening"])
+          && request.resource.data.note is string
+          && request.resource.data.note.size() < 300;
+        allow delete: if isMember(groupId)
+          && (resource.data.uid == request.auth.uid || isAdmin(groupId));
+      }
+
+      match /concerts/{concertId} {
+        allow read: if isMember(groupId);
+        allow create: if isMember(groupId)
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() < 120
+          && request.resource.data.date is string
+          && request.resource.data.part in ["morning", "afternoon", "evening"]
+          && request.resource.data.status in ["idea", "confirmed", "cancelled"]
+          && request.resource.data.city is string
+          && request.resource.data.venue is string
+          && request.resource.data.note is string
+          && request.resource.data.note.size() < 500;
+        allow update, delete: if isMember(groupId)
+          && (resource.data.createdBy == request.auth.uid || isAdmin(groupId))
+          && (request.method == "delete" || request.resource.data.createdBy == resource.data.createdBy);
+
+        match /rsvps/{uid} {
+          allow read: if isMember(groupId);
+          allow create, update: if isMember(groupId)
+            && request.auth.uid == uid
+            && request.resource.data.status in ["going", "not_going", "maybe"];
+          allow delete: if isMember(groupId) && request.auth.uid == uid;
+        }
+      }
+    }
+  }
+}

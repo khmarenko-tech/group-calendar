@@ -1,0 +1,16 @@
+.gradle/
+build/
+**/build/
+local.properties
+.idea/
+.DS_Store
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+google-services.json
+inter.zip
+inter-src/
+functions/node_modules/
+*.log
+*.apk
