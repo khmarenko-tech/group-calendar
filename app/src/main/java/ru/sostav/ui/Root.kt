@@ -26,6 +26,7 @@ import ru.sostav.ui.auth.AuthScreen
 import ru.sostav.ui.components.PrimaryButton
 import ru.sostav.ui.gate.GroupGateScreen
 import ru.sostav.ui.home.Home
+import ru.sostav.ui.update.UpdatePrompt
 
 class SessionViewModel : ViewModel() {
     val session = Graph.accounts.observe()
@@ -40,9 +41,10 @@ class SessionViewModel : ViewModel() {
 fun Root() {
     if (!BuildConfig.FIREBASE_CONFIGURED) {
         SetupScreen()
-        return
+    } else {
+        AuthenticatedRoot()
     }
-    AuthenticatedRoot()
+    UpdatePrompt()
 }
 
 @Composable
