@@ -45,19 +45,19 @@ import ru.sostav.logic.ConcertStatus
 import ru.sostav.logic.DayPart
 import ru.sostav.logic.Rsvp
 import ru.sostav.logic.blockingAbsences
+import ru.sostav.logic.daysIn
 import ru.sostav.logic.winningAbsence
 import ru.sostav.ui.GroupDataViewModel
 import ru.sostav.ui.components.ChoiceButtons
 import ru.sostav.ui.components.ConcertChip
 import ru.sostav.ui.components.ConfirmDialog
-import ru.sostav.ui.components.StripeRow
-import ru.sostav.ui.components.concertColor
 import ru.sostav.ui.components.DateField
 import ru.sostav.ui.components.EmptyText
 import ru.sostav.ui.components.InboxButton
+import ru.sostav.ui.components.StripeRow
+import ru.sostav.ui.components.concertColor
 import ru.sostav.ui.ru
-import ru.sostav.ui.ruDay
-import ru.sostav.ui.wirePart
+import ru.sostav.ui.ruRange
 import java.time.LocalDate
 
 @Composable
@@ -68,18 +68,18 @@ fun ConcertListScreen(
     onInbox: () -> Unit,
 ) {
     val today = LocalDate.now()
-    val upcoming = data.concerts.filter { !it.date.isBefore(today) }.sortedBy { it.date }
-    val past = data.concerts.filter { it.date.isBefore(today) }.sortedByDescending { it.date }
+    val upcoming = data.concerts.filter { !it.lastDay.isBefore(today) }.sortedBy { it.date }
+    val past = data.concerts.filter { it.lastDay.isBefore(today) }.sortedByDescending { it.date }
     Box(Modifier.fillMaxSize()) {
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Концерты", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                Text("События", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                 InboxButton(data.unread, onInbox)
             }
-            if (data.concerts.isEmpty()) EmptyText("Пока нет концертов. Добавьте дату, когда она появится.")
+            if (data.concerts.isEmpty()) EmptyText("Пока нет событий. Добавьте дату, когда она появится.")
             if (upcoming.isNotEmpty()) Text("Дальше", style = MaterialTheme.typography.titleMedium)
             upcoming.forEach { ConcertRow(it, data, onOpen) }
             if (past.isNotEmpty()) Text("Прошедшие", style = MaterialTheme.typography.titleMedium)
@@ -90,7 +90,7 @@ fun ConcertListScreen(
             onClick = onCreate,
             modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
             icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-            text = { Text("Концерт") },
+            text = { Text("Событие") },
         )
     }
 }
@@ -98,13 +98,16 @@ fun ConcertListScreen(
 @Composable
 private fun ConcertRow(concert: Concert, data: GroupDataViewModel, onOpen: (String) -> Unit) {
     val memberIds = data.members.map { it.uid }.toSet()
-    val blocked = blockingAbsences(data.absences, concert.date, concert.part).count { it.uid in memberIds }
+    val blocked = daysIn(concert.date, concert.lastDay)
+        .flatMap { day -> blockingAbsences(data.absences, day) }
+        .distinctBy { it.uid }
+        .count { it.uid in memberIds }
     val place = listOf(concert.city, concert.venue).filter { it.isNotBlank() }.joinToString(", ")
-    val whenText = "${concert.date.ruDay()}, ${concert.part.ru().lowercase()}"
+    val whenText = concert.date.ruRange(concert.lastDay)
     val blockedText = if (blocked > 0 && concert.status != ConcertStatus.CANCELLED) "Не могут: $blocked" else ""
     StripeRow(
         title = concert.title,
-        subtitle = listOf(whenText, place, blockedText).filter { it.isNotBlank() }.joinToString(" · "),
+        subtitle = listOf(whenText, place, concert.note, blockedText).filter { it.isNotBlank() }.joinToString(" · "),
         stripe = concertColor(concert.status),
         onClick = { onOpen(concert.id) },
         trailing = { ConcertChip(concert.status) },
@@ -128,13 +131,17 @@ fun ConcertDetailScreen(
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text(concert?.title ?: "Концерт") },
+            title = { Text(concert?.title ?: "Событие") },
             navigationIcon = {
                 IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Назад") }
             },
         )
         if (concert == null) {
-            Text("Концерт не найден", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyLarge)
+            Text("Событие уже удалено", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyLarge)
+            Button(
+                onClick = onBack,
+                modifier = Modifier.padding(16.dp).fillMaxWidth().heightIn(min = 48.dp),
+            ) { Text("Назад") }
             return
         }
         Column(
@@ -142,20 +149,20 @@ fun ConcertDetailScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             ConcertChip(concert.status)
-            Text("${concert.date.ruDay()}, ${concert.part.ru()}", style = MaterialTheme.typography.titleMedium)
+            Text(concert.date.ruRange(concert.lastDay), style = MaterialTheme.typography.titleMedium)
             val place = listOf(concert.city, concert.venue).filter { it.isNotBlank() }.joinToString(", ")
             if (place.isNotBlank()) Text(place, style = MaterialTheme.typography.bodyLarge)
             if (concert.note.isNotBlank()) Text(concert.note, style = MaterialTheme.typography.bodyLarge)
             if (concert.status == ConcertStatus.CANCELLED) {
-                Text("Концерт отменён", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyLarge)
+                Text("Событие отменено", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyLarge)
             }
-            Text("Вы едете?", style = MaterialTheme.typography.titleSmall)
+            Text("Вы будете?", style = MaterialTheme.typography.titleSmall)
             val mine = rsvps.find { it.uid == data.uid }?.status
             ChoiceButtons(
                 options = listOf(
-                    "Еду" to (mine == Rsvp.GOING),
-                    "Не еду" to (mine == Rsvp.NOT_GOING),
-                    "Может быть" to (mine == Rsvp.MAYBE),
+                    "Да" to (mine == Rsvp.GOING),
+                    "Нет" to (mine == Rsvp.NOT_GOING),
+                    "Может" to (mine == Rsvp.MAYBE),
                 ),
                 onSelect = { index ->
                     data.setRsvp(concert.id, listOf(Rsvp.GOING, Rsvp.NOT_GOING, Rsvp.MAYBE)[index])
@@ -163,8 +170,8 @@ fun ConcertDetailScreen(
             )
             val memberIds = data.members.map { it.uid }.toSet()
             val visibleRsvps = rsvps.filter { it.uid in memberIds }
-            RsvpBlock("Едут", data, concert, visibleRsvps.filter { it.status == Rsvp.GOING }.map { it.uid })
-            RsvpBlock("Не едут", data, concert, visibleRsvps.filter { it.status == Rsvp.NOT_GOING }.map { it.uid })
+            RsvpBlock("Будут", data, concert, visibleRsvps.filter { it.status == Rsvp.GOING }.map { it.uid })
+            RsvpBlock("Не будут", data, concert, visibleRsvps.filter { it.status == Rsvp.NOT_GOING }.map { it.uid })
             RsvpBlock("Под вопросом", data, concert, visibleRsvps.filter { it.status == Rsvp.MAYBE }.map { it.uid })
             val answered = visibleRsvps.map { it.uid }.toSet()
             RsvpBlock("Не ответили", data, concert, data.members.map { it.uid }.filter { it !in answered })
@@ -176,19 +183,19 @@ fun ConcertDetailScreen(
                 OutlinedButton(
                     onClick = { confirmDelete = true },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                ) { Text("Удалить концерт") }
+                ) { Text("Удалить") }
             }
         }
     }
     if (confirmDelete) {
         ConfirmDialog(
-            title = "Удалить концерт?",
-            body = "Ответы «еду / не еду» тоже пропадут.",
+            title = "Удалить событие?",
+            body = "Ответы тоже пропадут.",
             confirm = "Удалить",
             onConfirm = {
-                data.deleteConcert(concertId)
                 confirmDelete = false
                 onBack()
+                data.deleteConcert(concertId)
             },
             onDismiss = { confirmDelete = false },
         )
@@ -209,7 +216,7 @@ private fun RsvpBlock(
     }
     uids.forEach { uid ->
         val member = data.members.find { it.uid == uid }
-        val calendar = winningAbsence(data.absences, uid, concert.date, concert.part)?.status
+        val calendar = winningAbsence(data.absences, uid, concert.date)?.status
         Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
             Text(member?.displayName ?: "Участник", style = MaterialTheme.typography.bodyLarge)
             if (calendar == Availability.CANNOT) {
@@ -224,20 +231,20 @@ private fun RsvpBlock(
 class ConcertFormViewModel : ViewModel() {
     var title by mutableStateOf("")
     var date by mutableStateOf(LocalDate.now())
-    var part by mutableStateOf(DayPart.EVENING)
+    var endDate by mutableStateOf(LocalDate.now())
     var city by mutableStateOf("")
     var venue by mutableStateOf("")
     var note by mutableStateOf("")
     var status by mutableStateOf(ConcertStatus.IDEA)
     private var boundId: String? = null
 
-    fun load(concertId: String?, concert: Concert?, dateText: String, partText: String) {
+    fun load(concertId: String?, concert: Concert?, dateText: String) {
         if (!concertId.isNullOrBlank()) {
             if (concert == null || boundId == concert.id) return
             boundId = concert.id
             title = concert.title
             date = concert.date
-            part = concert.part
+            endDate = concert.lastDay
             city = concert.city
             venue = concert.venue
             note = concert.note
@@ -246,8 +253,10 @@ class ConcertFormViewModel : ViewModel() {
         }
         if (boundId != null) return
         boundId = "new"
-        dateText.takeIf { it.isNotBlank() }?.let { runCatching { LocalDate.parse(it) }.getOrNull() }?.let { date = it }
-        wirePart(partText)?.let { part = it }
+        dateText.takeIf { it.isNotBlank() }?.let { runCatching { LocalDate.parse(it) }.getOrNull() }?.let {
+            date = it
+            endDate = it
+        }
     }
 }
 
@@ -257,27 +266,30 @@ fun ConcertFormScreen(
     data: GroupDataViewModel,
     concertId: String?,
     initialDate: String,
-    initialPart: String,
     onBack: () -> Unit,
     onDone: (String?) -> Unit,
     model: ConcertFormViewModel = viewModel(),
 ) {
     val existing = concertId?.let { id -> data.concerts.find { it.id == id } }
-    androidx.compose.runtime.LaunchedEffect(concertId, existing?.id, initialDate, initialPart) {
-        model.load(concertId, existing, initialDate, initialPart)
+    androidx.compose.runtime.LaunchedEffect(concertId, existing?.id, initialDate) {
+        model.load(concertId, existing, initialDate)
     }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var saving by remember { mutableStateOf(false) }
     var localError by remember { mutableStateOf<String?>(null) }
     val memberIds = data.members.map { it.uid }.toSet()
-    val blocked = blockingAbsences(data.absences, model.date, model.part).filter { it.uid in memberIds }
+    val rangeDays = daysIn(model.date, model.endDate)
+    val blocked = rangeDays
+        .flatMap { day -> blockingAbsences(data.absences, day) }
+        .distinctBy { it.uid }
+        .filter { it.uid in memberIds }
     val unsure = data.members.filter { member ->
-        winningAbsence(data.absences, member.uid, model.date, model.part)?.status == Availability.MAYBE
+        rangeDays.any { day -> winningAbsence(data.absences, member.uid, day)?.status == Availability.MAYBE }
     }
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text(if (concertId == null) "Новый концерт" else "Концерт") },
+            title = { Text(if (concertId == null) "Новое событие" else "Событие") },
             navigationIcon = {
                 IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Назад") }
             },
@@ -293,12 +305,11 @@ fun ConcertFormScreen(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            DateField("Дата", model.date) { model.date = it }
-            Text("Часть дня", style = MaterialTheme.typography.labelLarge)
-            ChoiceButtons(
-                options = DayPart.entries.map { it.ru() to (it == model.part) },
-                onSelect = { model.part = DayPart.entries[it] },
-            )
+            DateField("Начало", model.date) {
+                model.date = it
+                if (model.endDate.isBefore(it)) model.endDate = it
+            }
+            DateField("Конец", model.endDate) { model.endDate = it }
             OutlinedTextField(
                 value = model.city,
                 onValueChange = { model.city = it.take(80) },
@@ -309,34 +320,34 @@ fun ConcertFormScreen(
             OutlinedTextField(
                 value = model.venue,
                 onValueChange = { model.venue = it.take(80) },
-                label = { Text("Площадка") },
+                label = { Text("Место") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
             OutlinedTextField(
                 value = model.note,
                 onValueChange = { model.note = it.take(499) },
-                label = { Text("Заметка: сбор, гонорар, что взять") },
+                label = { Text("Заметка: время, сбор, что взять") },
                 modifier = Modifier.fillMaxWidth(),
             )
             Text("Статус", style = MaterialTheme.typography.labelLarge)
             ChoiceButtons(
                 options = listOf(
                     "Идея" to (model.status == ConcertStatus.IDEA),
-                    "Подтверждён" to (model.status == ConcertStatus.CONFIRMED),
-                    "Отменён" to (model.status == ConcertStatus.CANCELLED),
+                    "Будет" to (model.status == ConcertStatus.CONFIRMED),
+                    "Нет" to (model.status == ConcertStatus.CANCELLED),
                 ),
                 onSelect = {
                     model.status = listOf(ConcertStatus.IDEA, ConcertStatus.CONFIRMED, ConcertStatus.CANCELLED)[it]
                 },
             )
-            Text("Уже заняты в календаре", style = MaterialTheme.typography.titleSmall)
+            Text("Уже заняты в эти дни", style = MaterialTheme.typography.titleSmall)
             if (blocked.isEmpty()) {
-                Text("Никто не поставил «не могу» на это время.", style = MaterialTheme.typography.bodyMedium)
+                Text("Никто не поставил «нет» на эти дни.", style = MaterialTheme.typography.bodyMedium)
             } else {
                 blocked.forEach { absence ->
                     val name = data.members.find { it.uid == absence.uid }?.displayName ?: "Участник"
-                    Text("$name — не могу", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyLarge)
+                    Text("$name — нет", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyLarge)
                 }
             }
             if (unsure.isNotEmpty()) {
@@ -352,11 +363,16 @@ fun ConcertFormScreen(
                         localError = "Напишите название"
                         return@Button
                     }
+                    if (model.endDate.isBefore(model.date)) {
+                        localError = "Конец раньше начала"
+                        return@Button
+                    }
                     val draft = Concert(
                         id = existing?.id.orEmpty(),
                         title = model.title.trim(),
                         date = model.date,
-                        part = model.part,
+                        endDate = model.endDate,
+                        part = DayPart.EVENING,
                         city = model.city.trim(),
                         venue = model.venue.trim(),
                         note = model.note.trim(),
@@ -378,4 +394,3 @@ fun ConcertFormScreen(
         }
     }
 }
-

@@ -35,7 +35,6 @@ import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.tasks.await
 import ru.sostav.data.Graph
 import ru.sostav.data.Profile
-import ru.sostav.logic.DayPart
 import ru.sostav.ui.GroupDataViewModel
 import ru.sostav.ui.availability.AbsenceFormScreen
 import ru.sostav.ui.availability.AvailabilityScreen
@@ -48,7 +47,7 @@ import ru.sostav.ui.inbox.InboxScreen
 
 private val tabs = listOf(
     Tab("calendar", "Календарь", Icons.Filled.DateRange),
-    Tab("concerts", "Концерты", Icons.Filled.Event),
+    Tab("concerts", "События", Icons.Filled.Event),
     Tab("me", "Я", Icons.Filled.Person),
     Tab("group", "Группа", Icons.Filled.Group),
 )
@@ -120,7 +119,8 @@ fun Home(profile: Profile, onSignOut: () -> Unit) {
                 CalendarScreen(
                     data = data,
                     onOpenConcert = { nav.navigate("concert/$it") },
-                    onCreateConcert = { date, part -> nav.navigate("concert-create?date=$date&part=${part.wire()}") },
+                    onCreateConcert = { date -> nav.navigate("concert-create?date=$date") },
+                    onCreateAbsence = { date -> nav.navigate("absence?id=&date=$date") },
                     onEditAbsence = { nav.navigate("absence?id=$it&date=") },
                     onInbox = { nav.navigate("inbox") },
                 )
@@ -129,7 +129,7 @@ fun Home(profile: Profile, onSignOut: () -> Unit) {
                 ConcertListScreen(
                     data = data,
                     onOpen = { nav.navigate("concert/$it") },
-                    onCreate = { nav.navigate("concert-create?date=&part=") },
+                    onCreate = { nav.navigate("concert-create?date=") },
                     onInbox = { nav.navigate("inbox") },
                 )
             }
@@ -173,23 +173,20 @@ fun Home(profile: Profile, onSignOut: () -> Unit) {
                     data = data,
                     concertId = entry.arguments?.getString("id"),
                     initialDate = "",
-                    initialPart = "",
                     onBack = { nav.popBackStack() },
                     onDone = { _ -> nav.popBackStack() },
                 )
             }
             composable(
-                route = "concert-create?date={date}&part={part}",
+                route = "concert-create?date={date}",
                 arguments = listOf(
                     navArgument("date") { type = NavType.StringType; defaultValue = "" },
-                    navArgument("part") { type = NavType.StringType; defaultValue = "" },
                 ),
             ) { entry ->
                 ConcertFormScreen(
                     data = data,
                     concertId = null,
                     initialDate = entry.arguments?.getString("date").orEmpty(),
-                    initialPart = entry.arguments?.getString("part").orEmpty(),
                     onBack = { nav.popBackStack() },
                     onDone = { id ->
                         nav.popBackStack()
@@ -216,8 +213,3 @@ fun Home(profile: Profile, onSignOut: () -> Unit) {
     }
 }
 
-private fun DayPart.wire(): String = when (this) {
-    DayPart.MORNING -> "morning"
-    DayPart.AFTERNOON -> "afternoon"
-    DayPart.EVENING -> "evening"
-}

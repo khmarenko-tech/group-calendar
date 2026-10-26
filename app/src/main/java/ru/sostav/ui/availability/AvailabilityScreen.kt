@@ -1,6 +1,7 @@
 package ru.sostav.ui.availability
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,7 +17,6 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -31,11 +31,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.Box
 import androidx.lifecycle.ViewModel
 import ru.sostav.logic.Absence
 import ru.sostav.logic.Availability
-import ru.sostav.logic.DayPart
+import ru.sostav.logic.absenceLabel
+import ru.sostav.logic.allDayParts
 import ru.sostav.ui.GroupDataViewModel
 import ru.sostav.ui.components.ChoiceButtons
 import ru.sostav.ui.components.ConfirmDialog
@@ -43,8 +43,7 @@ import ru.sostav.ui.components.DateField
 import ru.sostav.ui.components.EmptyText
 import ru.sostav.ui.components.InboxButton
 import ru.sostav.ui.components.StatusChip
-import ru.sostav.ui.ru
-import ru.sostav.ui.ruFull
+import ru.sostav.ui.ruRange
 import java.time.LocalDate
 
 @Composable
@@ -65,12 +64,12 @@ fun AvailabilityScreen(
                 InboxButton(data.unread, onInbox)
             }
             Text(
-                "Пустой день ничего не значит: человек ещё не отметил, может он или нет.",
+                "Подпись вроде «Макс минус» будет на каждом дне диапазона. Время пишите в заметке.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (mine.isEmpty()) {
-                EmptyText("Пока нет периодов. Добавьте отпуск, смену или один вечер.")
+                EmptyText("Пока нет отметок. Можно взять несколько дней сразу.")
             }
             mine.forEach { absence ->
                 OutlinedButton(
@@ -79,12 +78,11 @@ fun AvailabilityScreen(
                 ) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
-                            if (absence.start == absence.end) absence.start.ruFull()
-                            else "${absence.start.ruFull()} — ${absence.end.ruFull()}",
+                            absenceLabel(absence, data.myName),
                             style = MaterialTheme.typography.bodyLarge,
                         )
                         Text(
-                            absence.parts.sortedBy { it.ordinal }.joinToString(", ") { it.ru() },
+                            absence.start.ruRange(absence.end),
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
@@ -97,7 +95,7 @@ fun AvailabilityScreen(
             onClick = onCreate,
             modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
             icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-            text = { Text("Период") },
+            text = { Text("Дни") },
         )
     }
 }
@@ -105,7 +103,6 @@ fun AvailabilityScreen(
 class AbsenceFormViewModel : ViewModel() {
     var start by mutableStateOf(LocalDate.now())
     var end by mutableStateOf(LocalDate.now())
-    var parts by mutableStateOf(setOf(DayPart.EVENING))
     var status by mutableStateOf(Availability.CANNOT)
     var note by mutableStateOf("")
     private var boundId: String? = null
@@ -116,7 +113,6 @@ class AbsenceFormViewModel : ViewModel() {
             boundId = absence.id
             start = absence.start
             end = absence.end
-            parts = absence.parts
             status = absence.status
             note = absence.note
             return
@@ -150,7 +146,7 @@ fun AbsenceFormScreen(
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text(if (existing == null) "Новый период" else "Период") },
+            title = { Text(if (existing == null) "Отметить дни" else "Отметка") },
             navigationIcon = {
                 IconButton(onClick = onBack) {
                     Icon(Icons.Filled.ArrowBack, contentDescription = "Назад")
@@ -164,47 +160,33 @@ fun AbsenceFormScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            DateField("Начало", model.start) { model.start = it }
-            DateField("Конец", model.end) { model.end = it }
-            Text("Части дня", style = MaterialTheme.typography.labelLarge)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                DayPart.entries.forEach { part ->
-                    FilterChip(
-                        selected = part in model.parts,
-                        onClick = {
-                            model.parts = if (part in model.parts) model.parts - part else model.parts + part
-                        },
-                        label = { Text(part.ru()) },
-                        modifier = Modifier.heightIn(min = 48.dp),
-                    )
-                }
-            }
-            Text("Статус", style = MaterialTheme.typography.labelLarge)
-            ChoiceButtons(
-                options = listOf(
-                    "Могу" to (model.status == Availability.CAN),
-                    "Не могу" to (model.status == Availability.CANNOT),
-                    "Может быть" to (model.status == Availability.MAYBE),
-                ),
-                onSelect = { model.status = listOf(Availability.CAN, Availability.CANNOT, Availability.MAYBE)[it] },
-            )
             OutlinedTextField(
                 value = model.note,
                 onValueChange = { model.note = it.take(299) },
-                label = { Text("Заметка, если нужна") },
+                label = { Text("На каждом дне, например Макс минус") },
                 modifier = Modifier.fillMaxWidth(),
+            )
+            DateField("Начало", model.start) {
+                model.start = it
+                if (model.end.isBefore(it)) model.end = it
+            }
+            DateField("Конец", model.end) { model.end = it }
+            Text("Как отметиться", style = MaterialTheme.typography.labelLarge)
+            ChoiceButtons(
+                options = listOf(
+                    "Могу" to (model.status == Availability.CAN),
+                    "Нет" to (model.status == Availability.CANNOT),
+                    "Может" to (model.status == Availability.MAYBE),
+                ),
+                onSelect = { model.status = listOf(Availability.CAN, Availability.CANNOT, Availability.MAYBE)[it] },
             )
             if (!localError.isNullOrBlank()) {
                 Text(localError.orEmpty(), color = MaterialTheme.colorScheme.error)
             }
             Button(
                 onClick = {
-                    if (model.parts.isEmpty()) {
-                        localError = "Выберите утро, день или вечер"
-                        return@Button
-                    }
                     if (model.end.isBefore(model.start)) {
-                        localError = "Конец периода раньше начала"
+                        localError = "Конец раньше начала"
                         return@Button
                     }
                     data.saveAbsence(
@@ -214,7 +196,7 @@ fun AbsenceFormScreen(
                             uid = data.uid,
                             start = model.start,
                             end = model.end,
-                            parts = model.parts,
+                            parts = allDayParts(),
                             status = model.status,
                             note = model.note.trim(),
                         ),
@@ -227,14 +209,14 @@ fun AbsenceFormScreen(
                 OutlinedButton(
                     onClick = { confirmDelete = true },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                ) { Text("Удалить период") }
+                ) { Text("Удалить") }
             }
         }
     }
     if (confirmDelete && existing != null) {
         ConfirmDialog(
-            title = "Удалить период?",
-            body = "Отметка исчезнет у всех в группе.",
+            title = "Удалить отметку?",
+            body = "Она исчезнет с каждого дня у всей группы.",
             confirm = "Удалить",
             onConfirm = {
                 data.deleteAbsence(existing)

@@ -15,10 +15,10 @@ class SostavApp : Application() {
         }
         val channel = NotificationChannel(
             "sostav",
-            "Концерты и отсутствия",
-            NotificationManager.IMPORTANCE_DEFAULT,
+            "События и отметки",
+            NotificationManager.IMPORTANCE_HIGH,
         )
-        channel.description = "Новый концерт и отметка «не могу» на дату концерта"
+        channel.description = "Новое событие и отметка «нет» на эти дни"
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(channel)
     }

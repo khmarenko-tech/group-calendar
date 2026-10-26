@@ -32,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ru.sostav.logic.Availability
 import ru.sostav.logic.ConcertStatus
@@ -233,9 +234,13 @@ fun ChoiceButtons(
         options.forEachIndexed { index, (label, selected) ->
             val modifier = Modifier.weight(1f).heightIn(min = 48.dp)
             if (selected) {
-                Button(onClick = { onSelect(index) }, modifier = modifier) { Text(label, maxLines = 2) }
+                Button(onClick = { onSelect(index) }, modifier = modifier) {
+                    Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false)
+                }
             } else {
-                OutlinedButton(onClick = { onSelect(index) }, modifier = modifier) { Text(label, maxLines = 2) }
+                OutlinedButton(onClick = { onSelect(index) }, modifier = modifier) {
+                    Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false)
+                }
             }
         }
     }

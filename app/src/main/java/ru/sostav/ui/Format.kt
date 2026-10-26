@@ -39,8 +39,8 @@ fun wirePart(value: String?): DayPart? = when (value) {
 
 fun Availability.ru(): String = when (this) {
     Availability.CAN -> "Могу"
-    Availability.CANNOT -> "Не могу"
-    Availability.MAYBE -> "Под вопросом"
+    Availability.CANNOT -> "Нет"
+    Availability.MAYBE -> "Может"
 }
 
 fun Availability.wire(): String = when (this) {
@@ -58,8 +58,8 @@ fun wireAvailability(value: String?): Availability? = when (value) {
 
 fun ConcertStatus.ru(): String = when (this) {
     ConcertStatus.IDEA -> "Идея"
-    ConcertStatus.CONFIRMED -> "Подтверждён"
-    ConcertStatus.CANCELLED -> "Отменён"
+    ConcertStatus.CONFIRMED -> "Будет"
+    ConcertStatus.CANCELLED -> "Нет"
 }
 
 fun ConcertStatus.wire(): String = when (this) {
@@ -97,6 +97,9 @@ fun wireRsvp(value: String?): Rsvp? = when (value) {
 fun LocalDate.ruDay(): String = format(dayMonth)
 
 fun LocalDate.ruFull(): String = format(fullDate)
+
+fun LocalDate.ruRange(end: LocalDate): String =
+    if (this == end) ruFull() else "${ruDay()} — ${end.ruFull()}"
 
 fun millisToDate(millis: Long): LocalDate =
     Instant.ofEpochMilli(millis).atZone(ZoneOffset.UTC).toLocalDate()

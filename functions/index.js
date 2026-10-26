@@ -5,7 +5,12 @@ const { getMessaging } = require("firebase-admin/messaging");
 
 initializeApp();
 
-exports.pushInbox = onDocumentCreated("users/{uid}/inbox/{noticeId}", async (event) => {
+exports.pushInbox = onDocumentCreated(
+  {
+    document: "users/{uid}/inbox/{noticeId}",
+    region: "europe-west1",
+  },
+  async (event) => {
   const data = event.data?.data();
   if (!data) return;
 
@@ -21,6 +26,8 @@ exports.pushInbox = onDocumentCreated("users/{uid}/inbox/{noticeId}", async (eve
       body: String(data.body || ""),
     },
     data: {
+      title: String(data.title || "Календарь группы"),
+      body: String(data.body || ""),
       groupId: String(data.groupId || ""),
       concertId: String(data.concertId || ""),
     },
@@ -46,4 +53,5 @@ exports.pushInbox = onDocumentCreated("users/{uid}/inbox/{noticeId}", async (eve
     }
   });
   if (deletes > 0) await batch.commit();
-});
+},
+);

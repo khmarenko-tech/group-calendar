@@ -17,9 +17,9 @@ import ru.sostav.data.userMessage
 import ru.sostav.logic.Absence
 import ru.sostav.logic.Availability
 import ru.sostav.logic.Concert
-import ru.sostav.logic.DayPart
 import ru.sostav.logic.Rsvp
-import ru.sostav.logic.exactSlot
+import ru.sostav.logic.allDayParts
+import ru.sostav.logic.exactDay
 import java.time.LocalDate
 
 class GroupDataViewModel : ViewModel() {
@@ -79,18 +79,18 @@ class GroupDataViewModel : ViewModel() {
         startedKey = null
     }
 
-    fun saveQuick(date: LocalDate, part: DayPart, status: Availability) {
+    fun saveQuick(date: LocalDate, status: Availability, note: String = "") {
         viewModelScope.launch {
             runCatching {
-                val existing = exactSlot(absences, uid, date, part)
+                val existing = exactDay(absences, uid, date)
                 val draft = Absence(
                     id = existing?.id.orEmpty(),
                     uid = uid,
                     start = date,
                     end = date,
-                    parts = setOf(part),
+                    parts = allDayParts(),
                     status = status,
-                    note = existing?.note.orEmpty(),
+                    note = note.ifBlank { existing?.note.orEmpty() },
                 )
                 val id = Graph.schedule.saveAbsence(groupId, draft)
                 val next = absences.filterNot { it.id == existing?.id } + draft.copy(id = id)
@@ -102,6 +102,7 @@ class GroupDataViewModel : ViewModel() {
     }
 
     fun saveAbsence(previous: Absence?, draft: Absence) {
+        if (draft.uid != uid) return
         viewModelScope.launch {
             runCatching {
                 val id = Graph.schedule.saveAbsence(groupId, draft)

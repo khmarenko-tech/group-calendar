@@ -27,8 +27,8 @@ class SostavMessagingService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
-        val title = message.notification?.title ?: "Календарь группы"
-        val body = message.notification?.body ?: return
+        val title = message.notification?.title ?: message.data["title"] ?: "Календарь группы"
+        val body = message.notification?.body ?: message.data["body"] ?: return
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -46,6 +46,7 @@ class SostavMessagingService : FirebaseMessagingService() {
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(pending)
             .build()

@@ -22,6 +22,7 @@ import ru.sostav.logic.Concert
 import ru.sostav.logic.ConcertStatus
 import ru.sostav.logic.DayPart
 import ru.sostav.logic.Rsvp
+import ru.sostav.logic.allDayParts
 import ru.sostav.logic.activeConcertsInRange
 import ru.sostav.ui.dayMonth
 import ru.sostav.ui.wireAvailability
@@ -408,7 +409,7 @@ class ScheduleRepository {
 
     suspend fun saveAbsence(groupId: String, absence: Absence): String {
         if (absence.end.isBefore(absence.start)) throw AppException("Конец периода раньше начала")
-        if (absence.parts.isEmpty()) throw AppException("Выберите утро, день или вечер")
+        val parts = absence.parts.ifEmpty { allDayParts() }
         if (absence.note.length > 299) throw AppException("Заметка длиннее 299 символов")
         val col = db.collection("groups").document(groupId).collection("absences")
         val ref = if (absence.id.isBlank()) col.document() else col.document(absence.id)
@@ -417,7 +418,7 @@ class ScheduleRepository {
                 "uid" to absence.uid,
                 "startDate" to absence.start.toString(),
                 "endDate" to absence.end.toString(),
-                "parts" to absence.parts.map { it.stored() }.sorted(),
+                "parts" to parts.map { it.stored() }.sorted(),
                 "status" to absence.status.stored(),
                 "note" to absence.note.trim(),
                 "updatedAt" to System.currentTimeMillis(),
@@ -432,13 +433,15 @@ class ScheduleRepository {
 
     suspend fun saveConcert(groupId: String, concert: Concert): String {
         val title = concert.title.trim()
-        if (title.isEmpty() || title.length > 119) throw AppException("Название концерта — от 1 до 119 символов")
+        if (title.isEmpty() || title.length > 119) throw AppException("Название — от 1 до 119 символов")
+        if (concert.endDate.isBefore(concert.date)) throw AppException("Конец раньше начала")
         if (concert.note.length > 499) throw AppException("Заметка длиннее 499 символов")
         val col = db.collection("groups").document(groupId).collection("concerts")
         val ref = if (concert.id.isBlank()) col.document() else col.document(concert.id)
         val data = mutableMapOf<String, Any>(
             "title" to title,
             "date" to concert.date.toString(),
+            "endDate" to concert.lastDay.toString(),
             "part" to concert.part.stored(),
             "city" to concert.city.trim(),
             "venue" to concert.venue.trim(),
@@ -467,9 +470,7 @@ class ScheduleRepository {
         val body = buildString {
             append(concert.title)
             append(", ")
-            append(concert.date.format(dayMonth))
-            append(", ")
-            append(concert.part.spoken())
+            append(concertDateText(concert))
             if (place.isNotBlank()) {
                 append(", ")
                 append(place)
@@ -483,7 +484,7 @@ class ScheduleRepository {
                     toUid = uid,
                     fromUid = fromUid,
                     groupId = groupId,
-                    title = "Новый концерт",
+                    title = "Новое событие",
                     body = body,
                     concertId = concert.id,
                     type = "concert",
@@ -510,7 +511,8 @@ class ScheduleRepository {
             val blocks = myAbsences.any { absence ->
                 absence.uid == fromUid &&
                     absence.status == Availability.CANNOT &&
-                    absence.covers(concert.date, concert.part)
+                    !absence.end.isBefore(concert.date) &&
+                    !absence.start.isAfter(concert.lastDay)
             }
             others.forEach { uid ->
                 val id = "conflict_${concert.id}_$fromUid"
@@ -523,7 +525,7 @@ class ScheduleRepository {
                             fromUid = fromUid,
                             groupId = groupId,
                             title = "Кто-то не может",
-                            body = "$fromName не может ${concert.part.spoken()} ${concert.date.format(dayMonth)}. Концерт «${concert.title}».",
+                            body = "$fromName не может ${concertDateText(concert)}. «${concert.title}».",
                             concertId = concert.id,
                             type = "conflict",
                         ),
@@ -611,7 +613,7 @@ private fun DocumentSnapshot.toAbsence(): Absence? {
     val end = getString("endDate")?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: return null
     val status = wireAvailability(getString("status")) ?: return null
     val parts = (get("parts") as? List<*>)?.mapNotNull { wirePart(it?.toString()) }?.toSet().orEmpty()
-    if (parts.isEmpty()) return null
+        .ifEmpty { allDayParts() }
     return Absence(
         id = id,
         uid = getString("uid") ?: return null,
@@ -625,12 +627,14 @@ private fun DocumentSnapshot.toAbsence(): Absence? {
 
 private fun DocumentSnapshot.toConcert(): Concert? {
     val date = getString("date")?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: return null
-    val part = wirePart(getString("part")) ?: return null
+    val endDate = getString("endDate")?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: date
+    val part = wirePart(getString("part")) ?: DayPart.EVENING
     val status = wireConcertStatus(getString("status")) ?: return null
     return Concert(
         id = id,
         title = getString("title").orEmpty(),
         date = date,
+        endDate = endDate,
         part = part,
         city = getString("city").orEmpty(),
         venue = getString("venue").orEmpty(),
@@ -638,6 +642,11 @@ private fun DocumentSnapshot.toConcert(): Concert? {
         status = status,
         createdBy = getString("createdBy").orEmpty(),
     )
+}
+
+private fun concertDateText(concert: Concert): String {
+    val start = concert.date.format(dayMonth)
+    return if (concert.lastDay == concert.date) start else "$start — ${concert.lastDay.format(dayMonth)}"
 }
 
 private fun DocumentSnapshot.toNotice() = Notice(

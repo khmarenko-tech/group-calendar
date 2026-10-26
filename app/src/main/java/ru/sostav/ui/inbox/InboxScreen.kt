@@ -49,7 +49,7 @@ fun InboxScreen(data: GroupDataViewModel, onBack: () -> Unit, onOpen: (String) -
             Modifier.verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (data.notices.isEmpty()) EmptyText("Пока пусто. Здесь появятся новые концерты и отметки «не могу».")
+            if (data.notices.isEmpty()) EmptyText("Пока пусто. Здесь появятся новые события и отметки «нет».")
             data.notices.forEach { notice ->
                 Column(
                     Modifier
