@@ -80,6 +80,65 @@ function spanDays(c) { return Math.max(0, daysBetween(c.date, lastDay(c))); }
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 function memberName(uid) { return state.members.find((m) => m.uid === uid)?.displayName || "Участник"; }
 
+function monthBoard(monthDate) {
+  const first = startOfMonth(monthDate);
+  const lead = (first.getDay() + 6) % 7;
+  const cells = [];
+  for (let i = lead; i > 0; i -= 1) {
+    cells.push({ day: iso(addDays(first, -i)), outside: true });
+  }
+  const count = daysInMonth(first.getFullYear(), first.getMonth());
+  for (let d = 1; d <= count; d += 1) {
+    cells.push({ day: iso(new Date(first.getFullYear(), first.getMonth(), d)), outside: false });
+  }
+  while (cells.length < 42) {
+    cells.push({ day: iso(addDays(parseIso(cells[cells.length - 1].day), 1)), outside: true });
+  }
+  return cells;
+}
+
+function timePrefix(note) {
+  return (note || "").match(/^(\d{1,2}:\d{2})/)?.[1] || "";
+}
+
+function eventChipText(concert) {
+  const time = timePrefix(concert.note);
+  return time ? `${time} ${concert.title}` : concert.title;
+}
+
+function markChipText(absence) {
+  if (absence.note) return absence.note;
+  const short = memberName(absence.uid).split(" ")[0] || "Участник";
+  if (absence.status === "cannot") return `${short} минус`;
+  if (absence.status === "maybe") return `${short} ?`;
+  return short;
+}
+
+function chipsOn(day) {
+  const events = state.concerts.filter((c) => concertCovers(c, day)).map((c) => ({
+    kind: "event",
+    id: c.id,
+    text: eventChipText(c),
+    tone: c.status || "confirmed",
+  }));
+  const seen = new Set();
+  const marks = [];
+  state.absences.filter((a) => absenceCovers(a, day)).forEach((absence) => {
+    const text = markChipText(absence);
+    const key = text.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    marks.push({
+      kind: "mark",
+      id: absence.id,
+      uid: absence.uid,
+      text,
+      tone: absence.status,
+    });
+  });
+  return events.concat(marks);
+}
+
 function daysInMonth(year, month) { return new Date(year, month + 1, 0).getDate(); }
 function monthGrid(monthDate) {
   const first = startOfMonth(monthDate);
@@ -773,83 +832,58 @@ function renderGate() {
 }
 
 function renderCalendar() {
-  const cells = monthGrid(state.month);
+  const cells = monthBoard(state.month);
   const title = `${MONTHS[state.month.getMonth()]} ${state.month.getFullYear()}`;
-  const uid = state.profile.uid;
+  const mine = winningAbsence(state.profile.uid, state.selected);
+  const weekend = (day) => {
+    const n = parseIso(day).getDay();
+    return n === 0 || n === 6;
+  };
   return `
-    <div class="panel">
-      <div class="month-bar">
-        <h2>${title}</h2>
-        <div class="nav">
-          <button class="icon-btn" data-action="prev" aria-label="Предыдущий">‹</button>
-          <button class="icon-btn" data-action="today" title="Сегодня">•</button>
-          <button class="icon-btn" data-action="next" aria-label="Следующий">›</button>
-        </div>
+    <header class="bar">
+      <div class="brand-line">
+        <strong>${esc(state.group?.name || "Календарь группы")}</strong>
+        <span class="hint">${esc(state.profile.displayName)}</span>
       </div>
-      <div class="weekdays">${WEEKDAYS.map((d) => `<span>${d}</span>`).join("")}</div>
-      <div class="grid">
-        ${cells.map((day) => {
-          if (!day) return `<div class="day empty"></div>`;
-          const events = state.concerts.filter((c) => concertCovers(c, day));
-          const mine = winningAbsence(uid, day);
-          const others = state.members.filter((m) => m.uid !== uid).map((m) => {
-            const mark = winningAbsence(m.uid, day);
-            return mark ? { name: m.displayName, status: mark.status } : null;
-          }).filter(Boolean);
-          return `
-            <button class="day ${day === todayIso() ? "today" : ""} ${day === state.selected ? "selected" : ""}" data-action="pick" data-day="${day}">
-              <span class="n">${Number(day.slice(-2))}</span>
-              <span class="dots">${events.map((c) => `<span class="dot ${c.status || "confirmed"}"></span>`).join("")}</span>
-              <span class="marks">
-                ${mine ? `<span class="pill ${mine.status}">${MARK[mine.status]}</span>` : ""}
-                ${others.slice(0, 2).map((o) => `<span class="pill ${o.status}">${esc(o.name.split(" ")[0])}</span>`).join("")}
-              </span>
-            </button>`;
-        }).join("")}
+      <div class="month-switch">
+        <button class="icon-btn" data-action="prev" aria-label="Предыдущий месяц">‹</button>
+        <h1>${title}</h1>
+        <button class="icon-btn" data-action="next" aria-label="Следующий месяц">›</button>
       </div>
-    </div>`;
-}
-
-function renderDay() {
-  const day = state.selected;
-  const events = state.concerts.filter((c) => concertCovers(c, day)).sort((a, b) => cmp(a.date, b.date) || cmp(a.title, b.title));
-  const people = state.members.map((m) => ({ member: m, mark: winningAbsence(m.uid, day) }));
-  const mine = winningAbsence(state.profile.uid, day);
-  return `
-    <div class="panel">
-      <div class="day-head">
-        <div>
-          <h2>${ruFull(day)}</h2>
-          <p class="hint">${state.group?.name || "Группа"}</p>
-        </div>
-        <div class="nav">
-          <button class="chip" data-action="import-open">Яндекс</button>
-          <button class="primary" data-action="event-new">Событие</button>
-        </div>
+      <div class="bar-actions">
+        <button class="chip" data-action="today">Сегодня</button>
+        <button class="chip" data-action="import-open">Яндекс</button>
+        <button class="primary" data-action="event-new">+ Событие</button>
+        <button class="ghost" data-action="out">Выйти</button>
       </div>
-      <div class="quick">
-        ${["can", "cannot", "maybe"].map((status) => `
-          <button class="chip ${mine?.status === status ? `on-${status}` : ""}" data-action="quick" data-status="${status}">${MARK[status]}</button>
-        `).join("")}
-        <button class="chip" data-action="mark-new">Несколько дней</button>
-      </div>
-      ${state.error ? `<p class="error">${esc(state.error)}</p>` : ""}
-      ${events.length ? events.map((c) => `
-        <button class="item" data-action="event-edit" data-id="${c.id}">
-          <span class="badge ${c.status || "confirmed"}">${STATUS[c.status] || "Будет"}</span>
-          <b>${esc(c.title)}</b>
-          <div class="meta">${esc(concertLabel(c))}${c.city || c.venue ? ` · ${esc([c.city, c.venue].filter(Boolean).join(", "))}` : ""}</div>
-          ${c.note ? `<div class="meta">${esc(c.note)}</div>` : ""}
-        </button>
-      `).join("") : `<p class="hint">На этот день событий нет.</p>`}
-      <div class="people">
-        ${people.map(({ member, mark }) => `
-          <div class="person">
-            <span>${esc(member.displayName)}${member.uid === state.profile.uid ? " · вы" : ""}</span>
-            <span class="pill ${mark?.status || ""}">${mark ? MARK[mark.status] : "—"}</span>
-          </div>
-        `).join("")}
-      </div>
+    </header>
+    <div class="strip">
+      <b>${ruFull(state.selected)}</b>
+      ${["can", "cannot", "maybe"].map((status) => `
+        <button class="chip ${mine?.status === status ? `on-${status}` : ""}" data-action="quick" data-status="${status}">${MARK[status]}</button>
+      `).join("")}
+      <button class="chip" data-action="mark-new">Несколько дней</button>
+      ${state.error ? `<span class="error">${esc(state.error)}</span>` : ""}
+    </div>
+    <div class="weekdays">${WEEKDAYS.map((d) => `<span>${d}</span>`).join("")}</div>
+    <div class="board">
+      ${cells.map(({ day, outside }) => {
+        const chips = chipsOn(day);
+        const extra = chips.length - 4;
+        const visible = chips.slice(0, 4);
+        return `
+          <div class="cell ${outside ? "out" : ""} ${weekend(day) ? "weekend" : ""} ${day === todayIso() ? "today" : ""} ${day === state.selected ? "selected" : ""}" data-action="pick" data-day="${day}">
+            <span class="n">${Number(day.slice(-2))}</span>
+            <div class="chips">
+              ${visible.map((chip) => {
+                const canOpen = chip.kind === "event" || chip.uid === state.profile.uid;
+                const action = chip.kind === "event" ? "event-edit" : "mark-edit";
+                return `<button type="button" class="plaque ${chip.tone}" ${canOpen ? `data-action="${action}" data-id="${chip.id}"` : "disabled"}>${esc(chip.text)}</button>`;
+              }).join("")}
+              ${extra > 0 ? `<span class="more">+${extra}</span>` : ""}
+            </div>
+          </div>`;
+      }).join("")}
     </div>`;
 }
 
@@ -929,18 +963,8 @@ function renderMarkModal() {
 
 function renderApp() {
   return `
-    <div class="shell">
-      <div class="top">
-        <div>
-          <h1>Календарь группы</h1>
-          <p class="hint">${esc(state.group?.name || "Загрузка…")}</p>
-        </div>
-        <div class="who">
-          <span>${esc(state.profile.displayName)}</span>
-          <button class="ghost" data-action="out">Выйти</button>
-        </div>
-      </div>
-      <div class="layout">${renderCalendar()}${renderDay()}</div>
+    <div class="app">
+      ${renderCalendar()}
     </div>
     ${state.modal?.type === "event" ? renderEventModal() : ""}
     ${state.modal?.type === "mark" ? renderMarkModal() : ""}
