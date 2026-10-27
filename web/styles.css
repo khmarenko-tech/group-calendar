@@ -216,6 +216,14 @@ textarea { min-height: 88px; resize: vertical; }
   border-radius: 24px;
   padding: 24px;
 }
+.dialog.wide { width: min(640px, 100%); }
+.file-chip { position: relative; overflow: hidden; }
+.file-chip input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.import-list { display: grid; gap: 8px; margin: 12px 0; max-height: 42vh; overflow: auto; }
+.import-row { display: grid; grid-template-columns: 22px 1fr; gap: 10px; align-items: start; }
+.import-row.off { opacity: 0.55; }
+.import-row b { display: block; }
+.import-row input { margin-top: 4px; }
 .dialog h2 { margin: 0 0 8px; }
 .rsvp { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .people { margin-top: 16px; display: grid; gap: 8px; }

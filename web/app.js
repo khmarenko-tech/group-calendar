@@ -1,3 +1,4 @@
+import { alreadyImported, defaultImport, parseIcs, toConcertDraft, tooOld } from "./ics.js";
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
 import {
   getAuth,
@@ -196,6 +197,7 @@ function listenGroup(groupId) {
         createdBy: x.createdBy || "",
         repeat: x.repeat || "none",
         repeatUntil: x.repeatUntil || null,
+        importUid: x.importUid || "",
       };
     });
     render();
@@ -285,6 +287,81 @@ function noticeMap({ toUid, fromUid, groupId, title, body, concertId, type }) {
     read: false,
     createdAt: Date.now(),
   };
+}
+
+async function notifyImported(count) {
+  if (count <= 0) return;
+  const others = state.members.map((m) => m.uid).filter((uid) => uid !== state.profile.uid);
+  const body = `${state.profile.displayName} добавил события из Яндекс.Календаря: ${count}`;
+  const id = `import_${Date.now()}`;
+  await applyNotices(others.map((uid) => ({
+    uid,
+    id,
+    payload: noticeMap({
+      toUid: uid,
+      fromUid: state.profile.uid,
+      groupId: state.profile.groupId,
+      title: "События",
+      body,
+      concertId: "",
+      type: "import",
+    }),
+  })));
+}
+
+function applyImportText(text) {
+  const modal = state.modal?.type === "import" ? state.modal : { type: "import", url: "", rows: [] };
+  try {
+    const today = todayIso();
+    const events = parseIcs(text).filter((event) => !tooOld(event, today)).slice(0, 120);
+    if (!events.length) throw new Error("В календаре нет ближайших событий");
+    modal.rows = events.map((event) => {
+      const duplicate = alreadyImported(event, state.concerts);
+      return { event, duplicate, selected: !duplicate && defaultImport(event, today) };
+    });
+    const fresh = modal.rows.filter((row) => row.selected).length;
+    const copies = modal.rows.filter((row) => row.duplicate).length;
+    modal.info = `Нашли ${modal.rows.length}${fresh ? ` · к добавлению ${fresh}` : ""}${copies ? ` · уже есть ${copies}` : ""}`;
+    modal.error = "";
+  } catch (err) {
+    modal.rows = [];
+    modal.info = "";
+    modal.error = err.message || "Не удалось прочитать календарь. Нужен файл iCal из Яндекса.";
+  }
+  state.modal = modal;
+}
+
+function normalizeYandexUrl(raw) {
+  const trimmed = raw.trim().replace(/[\n\r]/g, "");
+  if (trimmed.toLowerCase().startsWith("webcal://")) return `https://${trimmed.slice(9)}`;
+  if (trimmed.toLowerCase().startsWith("http://")) return `https://${trimmed.slice(7)}`;
+  return trimmed;
+}
+
+function allowedYandex(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (new URL(url).protocol !== "https:") return false;
+    return host === "yandex.ru" || host === "yandex.com" || host === "ya.ru" ||
+      host.endsWith(".yandex.ru") || host.endsWith(".yandex.com") || host.endsWith(".ya.ru");
+  } catch {
+    return false;
+  }
+}
+
+async function fetchYandexIcs(raw) {
+  const url = normalizeYandexUrl(raw);
+  if (!allowedYandex(url)) throw new Error("Нужна ссылка экспорта iCal из Яндекс.Календаря");
+  try {
+    const response = await fetch(url, { headers: { Accept: "text/calendar, text/plain, */*" } });
+    if (!response.ok) throw new Error(`Яндекс ответил кодом ${response.status}`);
+    const text = await response.text();
+    if (!text.includes("BEGIN:VCALENDAR")) throw new Error("Это не файл календаря iCal");
+    return text;
+  } catch (err) {
+    if (String(err.message || "").includes("Яндекс") || String(err.message || "").includes("ссылка") || String(err.message || "").includes("iCal")) throw err;
+    throw new Error("Браузер не открывает ссылку Яндекса. Скачайте файл .ics в настройках календаря и загрузите его сюда.");
+  }
 }
 
 async function notifyNewConcert(concert) {
@@ -383,6 +460,7 @@ async function saveConcert(draft) {
     repeat: draft.repeat || "none",
   };
   if (!draft.id) data.createdAt = Date.now();
+  if (draft.importUid) data.importUid = draft.importUid;
   if (draft.repeat && draft.repeat !== "none" && draft.repeatUntil) data.repeatUntil = draft.repeatUntil;
   else data.repeatUntil = deleteField();
   await setDoc(ref, data, { merge: true });
@@ -536,6 +614,39 @@ root.addEventListener("click", (e) => {
     state.modal = { type: "event", draft: { date: state.selected, endDate: state.selected, status: "confirmed", repeat: "none" } };
     render();
   }
+  if (action === "import-open") {
+    state.modal = { type: "import", url: "", rows: [], info: "", error: "" };
+    render();
+  }
+  if (action === "import-load") {
+    const url = document.getElementById("import-url")?.value || "";
+    if (state.modal?.type === "import") state.modal.url = url;
+    run(async () => {
+      applyImportText(await fetchYandexIcs(url));
+    });
+  }
+  if (action === "import-paste") {
+    run(async () => {
+      const text = await navigator.clipboard.readText();
+      if (state.modal?.type === "import") state.modal.url = text;
+      if (/BEGIN:VCALENDAR/i.test(text)) applyImportText(text);
+    });
+  }
+  if (action === "import-all" && state.modal?.type === "import") {
+    const on = node.dataset.on === "1";
+    state.modal.rows = state.modal.rows.map((row) => row.duplicate ? row : { ...row, selected: on });
+    render();
+  }
+  if (action === "import-save" && state.modal?.type === "import") {
+    run(async () => {
+      const drafts = state.modal.rows.filter((row) => row.selected && !row.duplicate)
+        .map((row) => toConcertDraft(row.event, state.profile.uid));
+      if (!drafts.length) throw new Error("Отметьте события, которых ещё нет в группе");
+      for (const draft of drafts) await saveConcert(draft);
+      await notifyImported(drafts.length);
+      state.modal = null;
+    });
+  }
   if (action === "event-edit") {
     const concert = state.concerts.find((c) => c.id === node.dataset.id);
     if (concert) { state.modal = { type: "event", draft: { ...concert, endDate: lastDay(concert), repeat: concert.repeat || "none" } }; render(); }
@@ -592,10 +703,31 @@ root.addEventListener("click", (e) => {
   }
 });
 
+root.addEventListener("input", (e) => {
+  if (e.target.id === "import-url" && state.modal?.type === "import") state.modal.url = e.target.value;
+});
+
 root.addEventListener("change", (e) => {
   if (e.target.name === "repeat" && state.modal?.type === "event" && e.target.form) {
     state.modal.draft = readEventDraft(e.target.form);
     render();
+  }
+  if (e.target.dataset.action === "import-toggle" && state.modal?.type === "import") {
+    const uid = e.target.dataset.uid;
+    const on = e.target.checked;
+    state.modal.rows = state.modal.rows.map((row) => (
+      row.event.uid === uid && !row.duplicate ? { ...row, selected: on } : row
+    ));
+    render();
+  }
+  if (e.target.id === "import-file" && e.target.files?.[0]) {
+    e.target.files[0].text().then((text) => {
+      applyImportText(text);
+      render();
+    }).catch(() => {
+      if (state.modal?.type === "import") state.modal.error = "Не удалось открыть файл";
+      render();
+    });
   }
 });
 
@@ -690,7 +822,10 @@ function renderDay() {
           <h2>${ruFull(day)}</h2>
           <p class="hint">${state.group?.name || "Группа"}</p>
         </div>
-        <button class="primary" data-action="event-new">Событие</button>
+        <div class="nav">
+          <button class="chip" data-action="import-open">Яндекс</button>
+          <button class="primary" data-action="event-new">Событие</button>
+        </div>
       </div>
       <div class="quick">
         ${["can", "cannot", "maybe"].map((status) => `
@@ -808,7 +943,55 @@ function renderApp() {
       <div class="layout">${renderCalendar()}${renderDay()}</div>
     </div>
     ${state.modal?.type === "event" ? renderEventModal() : ""}
-    ${state.modal?.type === "mark" ? renderMarkModal() : ""}`;
+    ${state.modal?.type === "mark" ? renderMarkModal() : ""}
+    ${state.modal?.type === "import" ? renderImportModal() : ""}`;
+}
+
+function renderImportModal() {
+  const modal = state.modal;
+  const selected = modal.rows.filter((row) => row.selected && !row.duplicate).length;
+  return `
+    <div class="overlay" data-action="close">
+      <div class="dialog wide" data-stop="1">
+        <h2>Яндекс.Календарь</h2>
+        <p class="hint">В Яндекс.Календаре откройте календарь → настройки → «Экспорт». Лучше скачать файл .ics и загрузить его сюда. Ссылку iCal тоже можно вставить, пароль Яндекса не нужен.</p>
+        <label for="import-url">Ссылка iCal</label>
+        <textarea id="import-url">${esc(modal.url || "")}</textarea>
+        <div class="quick">
+          <button class="chip" data-action="import-paste">Вставить из буфера</button>
+          <button class="primary" data-action="import-load" ${state.busy ? "disabled" : ""}>${state.busy ? "Загружаю…" : "Загрузить по ссылке"}</button>
+          <label class="chip file-chip">Файл .ics<input id="import-file" type="file" accept=".ics,.ical,text/calendar,text/plain"></label>
+        </div>
+        <p class="error">${esc(modal.error || state.error)}</p>
+        ${modal.info ? `<p class="hint">${esc(modal.info)}</p>` : ""}
+        ${modal.rows.some((row) => !row.duplicate) ? `
+          <div class="quick">
+            <button class="chip" data-action="import-all" data-on="1">Все</button>
+            <button class="chip" data-action="import-all" data-on="0">Снять</button>
+          </div>` : ""}
+        <div class="import-list">
+          ${modal.rows.map((row) => `
+            <label class="import-row ${row.duplicate ? "off" : ""}">
+              <input type="checkbox" ${row.selected ? "checked" : ""} ${row.duplicate ? "disabled" : ""} data-action="import-toggle" data-uid="${esc(row.event.uid).replace(/"/g, "")}">
+              <span>
+                <b>${esc(row.event.title)}</b>
+                <span class="meta">${esc([
+                  ruRange(row.event.date, row.event.endDate),
+                  row.event.timeText,
+                  row.event.location,
+                  row.event.repeat && row.event.repeat !== "none" ? REPEAT[row.event.repeat] : "",
+                  row.duplicate ? "уже в группе" : "",
+                ].filter(Boolean).join(" · "))}</span>
+              </span>
+            </label>
+          `).join("")}
+        </div>
+        <div class="actions">
+          <button class="primary" data-action="import-save" ${state.busy || selected === 0 ? "disabled" : ""}>${state.busy ? "Добавляем…" : `Добавить в группу: ${selected}`}</button>
+          <button type="button" class="ghost" data-action="close">Закрыть</button>
+        </div>
+      </div>
+    </div>`;
 }
 
 function render() {
