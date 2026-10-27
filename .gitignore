@@ -14,3 +14,7 @@ inter-src/
 functions/node_modules/
 *.log
 *.apk
+*.jks
+*.keystore
+key.properties
+keystore/

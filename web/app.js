@@ -1,0 +1,821 @@
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+import {
+  getAuth,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  signOut,
+  updateProfile,
+} from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+import {
+  getFirestore,
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  collection,
+  onSnapshot,
+  writeBatch,
+  deleteField,
+} from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDzH7frZwRUWPPof9-AiIely89rd9gFTSM",
+  authDomain: "group-calendar-57860.firebaseapp.com",
+  projectId: "group-calendar-57860",
+  storageBucket: "group-calendar-57860.firebasestorage.app",
+  messagingSenderId: "907587101422",
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+const MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"];
+const MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+const WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+const REPEAT = { none: "Разово", daily: "Каждый день", weekly: "Каждую неделю", monthly: "Каждый месяц", yearly: "Каждый год" };
+const STATUS = { idea: "Идея", confirmed: "Будет", cancelled: "Нет" };
+const MARK = { can: "Могу", cannot: "Нет", maybe: "Может" };
+const RSVP = { going: "Еду", not_going: "Не еду", maybe: "Под вопросом" };
+
+const state = {
+  screen: "boot",
+  authMode: "in",
+  error: "",
+  busy: false,
+  profile: null,
+  group: null,
+  members: [],
+  concerts: [],
+  absences: [],
+  month: startOfMonth(new Date()),
+  selected: iso(new Date()),
+  modal: null,
+  rsvps: {},
+};
+
+let userUnsub = null;
+let groupUnsubs = [];
+let currentGroupId = null;
+const root = document.getElementById("app");
+
+function pad(n) { return String(n).padStart(2, "0"); }
+function iso(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+function parseIso(s) { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); }
+function startOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
+function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function addMonths(d, n) { return new Date(d.getFullYear(), d.getMonth() + n, 1); }
+function daysBetween(a, b) { return Math.round((parseIso(b) - parseIso(a)) / 86400000); }
+function cmp(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
+function todayIso() { return iso(new Date()); }
+function ruDay(s) { const d = parseIso(s); return `${d.getDate()} ${MONTHS_GEN[d.getMonth()]}`; }
+function ruFull(s) { const d = parseIso(s); return `${d.getDate()} ${MONTHS_GEN[d.getMonth()]} ${d.getFullYear()}`; }
+function ruRange(a, b) { return a === b ? ruFull(a) : `${ruDay(a)} — ${ruFull(b)}`; }
+function lastDay(c) { return c.endDate && c.endDate >= c.date ? c.endDate : c.date; }
+function spanDays(c) { return Math.max(0, daysBetween(c.date, lastDay(c))); }
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function memberName(uid) { return state.members.find((m) => m.uid === uid)?.displayName || "Участник"; }
+
+function daysInMonth(year, month) { return new Date(year, month + 1, 0).getDate(); }
+function monthGrid(monthDate) {
+  const first = startOfMonth(monthDate);
+  const lead = (first.getDay() + 6) % 7;
+  const count = daysInMonth(first.getFullYear(), first.getMonth());
+  const cells = Array(lead).fill(null);
+  for (let d = 1; d <= count; d++) cells.push(iso(new Date(first.getFullYear(), first.getMonth(), d)));
+  while (cells.length % 7) cells.push(null);
+  return cells;
+}
+
+function monthlyStart(c, start) {
+  const a = parseIso(c.date);
+  const b = parseIso(start);
+  if (a.getDate() !== b.getDate()) return false;
+  const months = (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
+  if (months < 0) return false;
+  const expected = new Date(a.getFullYear(), a.getMonth() + months, a.getDate());
+  return iso(expected) === start;
+}
+
+function yearlyStart(c, start) {
+  const a = parseIso(c.date);
+  const b = parseIso(start);
+  if (a.getMonth() !== b.getMonth() || a.getDate() !== b.getDate()) return false;
+  if (b.getFullYear() < a.getFullYear()) return false;
+  const expected = new Date(b.getFullYear(), a.getMonth(), a.getDate());
+  return iso(expected) === start;
+}
+
+function isOccurrenceStart(c, start) {
+  if (start < c.date) return false;
+  if (c.repeatUntil && start > c.repeatUntil) return false;
+  if (c.repeat === "daily") return true;
+  if (c.repeat === "weekly") return daysBetween(c.date, start) % 7 === 0;
+  if (c.repeat === "monthly") return monthlyStart(c, start);
+  if (c.repeat === "yearly") return yearlyStart(c, start);
+  return start === c.date;
+}
+
+function occurrenceStartOn(c, day) {
+  if (day < c.date) return null;
+  let candidate = day;
+  let step = 0;
+  const span = spanDays(c);
+  while (candidate >= c.date && step <= span) {
+    if (isOccurrenceStart(c, candidate) && day <= iso(addDays(parseIso(candidate), span))) return candidate;
+    candidate = iso(addDays(parseIso(candidate), -1));
+    step += 1;
+  }
+  return null;
+}
+
+function concertCovers(c, day) { return occurrenceStartOn(c, day) != null; }
+function absenceCovers(a, day) { return a.end >= a.start && day >= a.start && day <= a.end; }
+
+function winningAbsence(uid, day) {
+  const matches = state.absences.filter((a) => a.uid === uid && absenceCovers(a, day));
+  return matches.find((a) => a.status === "cannot")
+    || matches.find((a) => a.status === "maybe")
+    || matches.find((a) => a.status === "can")
+    || null;
+}
+
+function exactDay(uid, day) {
+  return state.absences.find((a) => a.uid === uid && a.start === day && a.end === day) || null;
+}
+
+function concertLabel(c) {
+  const first = ruRange(c.date, lastDay(c));
+  if (!c.repeat || c.repeat === "none") return first;
+  const until = c.repeatUntil ? ` до ${ruFull(c.repeatUntil)}` : "";
+  return `${first} · ${REPEAT[c.repeat] || ""}${until}`;
+}
+
+function mapAuthError(err) {
+  const code = err?.code || "";
+  if (code.includes("invalid-credential") || code.includes("wrong-password") || code.includes("user-not-found")) return "Неверная почта или пароль";
+  if (code.includes("email-already-in-use")) return "Эта почта уже занята";
+  if (code.includes("too-many-requests")) return "Слишком много попыток, подождите";
+  if (code.includes("network")) return "Нет сети";
+  return err?.message || "Не получилось";
+}
+
+function clearGroup() {
+  groupUnsubs.forEach((u) => u());
+  groupUnsubs = [];
+  currentGroupId = null;
+}
+
+function listenGroup(groupId) {
+  if (currentGroupId === groupId) return;
+  clearGroup();
+  currentGroupId = groupId;
+  groupUnsubs.push(onSnapshot(doc(db, "groups", groupId), (snap) => {
+    state.group = snap.exists() ? { id: snap.id, ...snap.data() } : null;
+    render();
+  }));
+  groupUnsubs.push(onSnapshot(collection(db, "groups", groupId, "members"), (snap) => {
+    state.members = snap.docs.map((d) => ({ uid: d.id, ...d.data() }));
+    render();
+  }));
+  groupUnsubs.push(onSnapshot(collection(db, "groups", groupId, "concerts"), (snap) => {
+    state.concerts = snap.docs.map((d) => {
+      const x = d.data();
+      return {
+        id: d.id,
+        title: x.title || "",
+        date: x.date,
+        endDate: x.endDate || x.date,
+        city: x.city || "",
+        venue: x.venue || "",
+        note: x.note || "",
+        status: x.status || "confirmed",
+        createdBy: x.createdBy || "",
+        repeat: x.repeat || "none",
+        repeatUntil: x.repeatUntil || null,
+      };
+    });
+    render();
+  }));
+  groupUnsubs.push(onSnapshot(collection(db, "groups", groupId, "absences"), (snap) => {
+    state.absences = snap.docs.map((d) => {
+      const x = d.data();
+      return {
+        id: d.id,
+        uid: x.uid,
+        start: x.startDate,
+        end: x.endDate || x.startDate,
+        status: x.status,
+        note: x.note || "",
+      };
+    });
+    render();
+  }));
+}
+
+onAuthStateChanged(auth, async (user) => {
+  if (userUnsub) { userUnsub(); userUnsub = null; }
+  clearGroup();
+  state.error = "";
+  if (!user) {
+    state.screen = "auth";
+    state.profile = null;
+    state.group = null;
+    state.members = [];
+    state.concerts = [];
+    state.absences = [];
+    render();
+    return;
+  }
+  try {
+    const ref = doc(db, "users", user.uid);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        email: user.email || "",
+        displayName: user.displayName || user.email?.split("@")[0] || "Участник",
+        groupId: null,
+      });
+    }
+    userUnsub = onSnapshot(ref, (docSnap) => {
+      const data = docSnap.data() || {};
+      state.profile = {
+        uid: user.uid,
+        email: data.email || user.email || "",
+        displayName: data.displayName || "Участник",
+        groupId: data.groupId || null,
+      };
+      if (state.profile.groupId) {
+        state.screen = "app";
+        listenGroup(state.profile.groupId);
+      } else {
+        clearGroup();
+        state.screen = "gate";
+        state.group = null;
+      }
+      render();
+    });
+  } catch (err) {
+    state.screen = "auth";
+    state.error = mapAuthError(err);
+    render();
+  }
+});
+
+async function applyNotices(writes) {
+  for (let i = 0; i < writes.length; i += 400) {
+    const batch = writeBatch(db);
+    writes.slice(i, i + 400).forEach((write) => {
+      const ref = doc(db, "users", write.uid, "inbox", write.id);
+      if (write.payload) batch.set(ref, write.payload);
+      else batch.delete(ref);
+    });
+    await batch.commit();
+  }
+}
+
+function noticeMap({ toUid, fromUid, groupId, title, body, concertId, type }) {
+  return {
+    toUid, fromUid, groupId, title, body,
+    concertId: concertId || "",
+    type,
+    read: false,
+    createdAt: Date.now(),
+  };
+}
+
+async function notifyNewConcert(concert) {
+  const others = state.members.map((m) => m.uid).filter((uid) => uid !== state.profile.uid);
+  const place = [concert.city, concert.venue].filter(Boolean).join(", ");
+  const verb = concert.status === "cancelled" ? "отменил" : "добавил";
+  const body = `${state.profile.displayName} ${verb} «${concert.title}» · ${concertLabel(concert)}${place ? ` · ${place}` : ""}`;
+  await applyNotices(others.map((uid) => ({
+    uid,
+    id: `concert_${concert.id}`,
+    payload: noticeMap({
+      toUid: uid,
+      fromUid: state.profile.uid,
+      groupId: state.profile.groupId,
+      title: "Событие",
+      body,
+      concertId: concert.id,
+      type: "concert",
+    }),
+  })));
+}
+
+async function notifyMark(absence, noticeId) {
+  const others = state.members.map((m) => m.uid).filter((uid) => uid !== state.profile.uid);
+  if (!others.length) return;
+  if (!absence) {
+    await applyNotices(others.map((uid) => ({ uid, id: noticeId, payload: null })));
+    return;
+  }
+  const note = (absence.note || "").trim();
+  const body = `${state.profile.displayName}: ${MARK[absence.status]} · ${ruRange(absence.start, absence.end)}${note ? ` · ${note}` : ""}`;
+  await applyNotices(others.map((uid) => ({
+    uid,
+    id: noticeId,
+    payload: noticeMap({
+      toUid: uid,
+      fromUid: state.profile.uid,
+      groupId: state.profile.groupId,
+      title: "Календарь",
+      body,
+      concertId: "",
+      type: "mark",
+    }),
+  })));
+}
+
+async function syncConflicts(absences, start, end) {
+  const relevant = state.concerts.filter((c) => {
+    if (c.status === "cancelled") return false;
+    const last = lastDay(c);
+    return last >= start && c.date <= end;
+  });
+  const others = state.members.map((m) => m.uid).filter((uid) => uid !== state.profile.uid);
+  const writes = [];
+  relevant.forEach((concert) => {
+    const blocks = absences.some((a) => a.uid === state.profile.uid && a.status === "cannot" && a.end >= concert.date && a.start <= lastDay(concert));
+    others.forEach((uid) => {
+      const id = `conflict_${concert.id}_${state.profile.uid}`;
+      writes.push(blocks
+        ? {
+          uid,
+          id,
+          payload: noticeMap({
+            toUid: uid,
+            fromUid: state.profile.uid,
+            groupId: state.profile.groupId,
+            title: "Кто-то не может",
+            body: `${state.profile.displayName} не может ${concertLabel(concert)}. «${concert.title}».`,
+            concertId: concert.id,
+            type: "conflict",
+          }),
+        }
+        : { uid, id, payload: null });
+    });
+  });
+  if (writes.length) await applyNotices(writes);
+}
+
+async function saveConcert(draft) {
+  const title = draft.title.trim();
+  if (!title || title.length > 119) throw new Error("Название — от 1 до 119 символов");
+  if (draft.endDate < draft.date) throw new Error("Конец раньше начала");
+  if ((draft.note || "").length > 499) throw new Error("Заметка длиннее 499 символов");
+  const col = collection(db, "groups", state.profile.groupId, "concerts");
+  const ref = draft.id ? doc(col, draft.id) : doc(col);
+  const data = {
+    title,
+    date: draft.date,
+    endDate: draft.endDate,
+    part: "evening",
+    city: (draft.city || "").trim(),
+    venue: (draft.venue || "").trim(),
+    note: (draft.note || "").trim(),
+    status: draft.status,
+    createdBy: draft.createdBy || state.profile.uid,
+    repeat: draft.repeat || "none",
+  };
+  if (!draft.id) data.createdAt = Date.now();
+  if (draft.repeat && draft.repeat !== "none" && draft.repeatUntil) data.repeatUntil = draft.repeatUntil;
+  else data.repeatUntil = deleteField();
+  await setDoc(ref, data, { merge: true });
+  return ref.id;
+}
+
+async function saveAbsence(draft) {
+  if (draft.end < draft.start) throw new Error("Конец периода раньше начала");
+  if ((draft.note || "").length > 299) throw new Error("Заметка длиннее 299 символов");
+  const col = collection(db, "groups", state.profile.groupId, "absences");
+  const ref = draft.id ? doc(col, draft.id) : doc(col);
+  await setDoc(ref, {
+    uid: state.profile.uid,
+    startDate: draft.start,
+    endDate: draft.end,
+    parts: ["afternoon", "evening", "morning"],
+    status: draft.status,
+    note: (draft.note || "").trim(),
+    updatedAt: Date.now(),
+  });
+  return ref.id;
+}
+
+function readEventDraft(form) {
+  return {
+    id: formVal(form, "id"),
+    createdBy: formVal(form, "createdBy") || state.profile.uid,
+    title: formVal(form, "title"),
+    date: formVal(form, "date"),
+    endDate: formVal(form, "endDate") || formVal(form, "date"),
+    city: formVal(form, "city"),
+    venue: formVal(form, "venue"),
+    note: formVal(form, "note"),
+    status: formVal(form, "status") || "confirmed",
+    repeat: formVal(form, "repeat") || "none",
+    repeatUntil: formVal(form, "repeatUntil") || null,
+  };
+}
+
+async function run(task) {
+  state.busy = true;
+  state.error = "";
+  render();
+  try {
+    await task();
+  } catch (err) {
+    state.error = mapAuthError(err);
+  } finally {
+    state.busy = false;
+    render();
+  }
+}
+
+function formVal(form, name) { return new FormData(form).get(name)?.toString() || ""; }
+
+root.addEventListener("submit", (e) => {
+  const form = e.target;
+  if (!(form instanceof HTMLFormElement)) return;
+  e.preventDefault();
+  const kind = form.dataset.form;
+  if (kind === "auth") {
+    run(async () => {
+      const email = formVal(form, "email").trim();
+      const password = formVal(form, "password");
+      const name = formVal(form, "name").trim();
+      state.authEmail = email;
+      state.authName = name;
+      if (state.authMode === "reset") {
+        if (!email.includes("@")) throw new Error("Напишите почту, на неё придёт письмо");
+        await sendPasswordResetEmail(auth, email);
+        state.error = "Письмо отправлено";
+        state.authMode = "in";
+        return;
+      }
+      if (!email.includes("@") || email.length < 5) throw new Error("Напишите почту");
+      if (password.length < 8) throw new Error("Пароль не короче 8 символов");
+      if (state.authMode === "up") {
+        if (!name || name.length > 59) throw new Error("Напишите имя, как вас видит группа");
+        const cred = await createUserWithEmailAndPassword(auth, email, password);
+        await updateProfile(cred.user, { displayName: name });
+        await setDoc(doc(db, "users", cred.user.uid), { email, displayName: name, groupId: null });
+      } else {
+        await signInWithEmailAndPassword(auth, email, password);
+      }
+    });
+  }
+  if (kind === "join") {
+    run(async () => {
+      const code = formVal(form, "code").trim().toUpperCase();
+      if (code.length !== 6) throw new Error("Код из 6 символов");
+      const snap = await getDoc(doc(db, "inviteCodes", code));
+      if (!snap.exists()) throw new Error("Такого кода нет");
+      const groupId = snap.data().groupId;
+      await setDoc(doc(db, "groups", groupId, "members", state.profile.uid), {
+        displayName: state.profile.displayName,
+        email: state.profile.email,
+        role: "member",
+        usedCode: code,
+      });
+      await updateDoc(doc(db, "users", state.profile.uid), { groupId });
+    });
+  }
+  if (kind === "event") {
+    run(async () => {
+      const draft = readEventDraft(form);
+      const id = await saveConcert(draft);
+      if (!draft.id) await notifyNewConcert({ ...draft, id, title: draft.title.trim() });
+      state.modal = null;
+    });
+  }
+  if (kind === "mark") {
+    run(async () => {
+      const previousId = formVal(form, "id");
+      const id = await saveAbsence({
+        id: previousId,
+        start: formVal(form, "start"),
+        end: formVal(form, "end") || formVal(form, "start"),
+        status: formVal(form, "status"),
+        note: formVal(form, "note"),
+      });
+      const saved = {
+        id,
+        uid: state.profile.uid,
+        start: formVal(form, "start"),
+        end: formVal(form, "end") || formVal(form, "start"),
+        status: formVal(form, "status"),
+        note: formVal(form, "note"),
+      };
+      const next = state.absences.filter((a) => a.id !== previousId && a.id !== id).concat(saved);
+      await notifyMark(saved, `mark_${id}`);
+      await syncConflicts(next, saved.start, saved.end);
+      state.modal = null;
+    });
+  }
+});
+
+root.addEventListener("click", (e) => {
+  const node = e.target.closest("[data-action]");
+  if (!node) return;
+  if (node.dataset.action === "close" && e.target.closest(".dialog") && e.target !== node) return;
+  const action = node.dataset.action;
+  if (action === "auth-in") { state.authMode = "in"; state.error = ""; render(); }
+  if (action === "auth-up") { state.authMode = "up"; state.error = ""; render(); }
+  if (action === "auth-reset") { state.authMode = "reset"; state.error = ""; render(); }
+  if (action === "out") run(() => signOut(auth));
+  if (action === "prev") { state.month = addMonths(state.month, -1); render(); }
+  if (action === "next") { state.month = addMonths(state.month, 1); render(); }
+  if (action === "today") { state.month = startOfMonth(new Date()); state.selected = todayIso(); render(); }
+  if (action === "pick") { state.selected = node.dataset.day; render(); }
+  if (action === "event-new") {
+    state.modal = { type: "event", draft: { date: state.selected, endDate: state.selected, status: "confirmed", repeat: "none" } };
+    render();
+  }
+  if (action === "event-edit") {
+    const concert = state.concerts.find((c) => c.id === node.dataset.id);
+    if (concert) { state.modal = { type: "event", draft: { ...concert, endDate: lastDay(concert), repeat: concert.repeat || "none" } }; render(); }
+  }
+  if (action === "mark-new") {
+    const mine = exactDay(state.profile.uid, state.selected);
+    state.modal = { type: "mark", draft: mine || { start: state.selected, end: state.selected, status: "cannot" } };
+    render();
+  }
+  if (action === "mark-edit") {
+    const absence = state.absences.find((a) => a.id === node.dataset.id);
+    if (absence) { state.modal = { type: "mark", draft: { ...absence, start: absence.startDate || absence.start, end: absence.endDate || absence.end } }; render(); }
+  }
+  if (action === "quick") {
+    run(async () => {
+      const existing = exactDay(state.profile.uid, state.selected);
+      const savedId = await saveAbsence({
+        id: existing?.id || "",
+        start: state.selected,
+        end: state.selected,
+        status: node.dataset.status,
+        note: existing?.note || "",
+      });
+      const saved = { id: savedId, uid: state.profile.uid, start: state.selected, end: state.selected, status: node.dataset.status, note: existing?.note || "" };
+      const next = state.absences.filter((a) => a.id !== existing?.id).concat(saved);
+      await notifyMark(saved, `mark_${savedId}`);
+      await syncConflicts(next, state.selected, state.selected);
+    });
+  }
+  if (action === "close") { state.modal = null; render(); }
+  if (action === "delete-event") {
+    run(async () => {
+      await deleteDoc(doc(db, "groups", state.profile.groupId, "concerts", node.dataset.id));
+      state.modal = null;
+    });
+  }
+  if (action === "delete-mark") {
+    run(async () => {
+      await deleteDoc(doc(db, "groups", state.profile.groupId, "absences", node.dataset.id));
+      const next = state.absences.filter((a) => a.id !== node.dataset.id);
+      await notifyMark(null, `mark_${node.dataset.id}`);
+      await syncConflicts(next, state.selected, state.selected);
+      state.modal = null;
+    });
+  }
+  if (action === "rsvp") {
+    run(async () => {
+      await setDoc(doc(db, "groups", state.profile.groupId, "concerts", node.dataset.id, "rsvps", state.profile.uid), {
+        status: node.dataset.status,
+        updatedAt: Date.now(),
+      });
+      state.rsvps[node.dataset.id] = { ...(state.rsvps[node.dataset.id] || {}), [state.profile.uid]: node.dataset.status };
+    });
+  }
+});
+
+root.addEventListener("change", (e) => {
+  if (e.target.name === "repeat" && state.modal?.type === "event" && e.target.form) {
+    state.modal.draft = readEventDraft(e.target.form);
+    render();
+  }
+});
+
+function renderAuth() {
+  const reset = state.authMode === "reset";
+  const up = state.authMode === "up";
+  return `
+    <div class="center">
+      <form class="card" data-form="auth">
+        <div class="brand">К</div>
+        <h1>Календарь группы</h1>
+        <p class="lead">Тот же вход, что в телефоне. С компьютера удобно ставить даты.</p>
+        ${up ? `<label for="name">Имя</label><input id="name" name="name" autocomplete="name" value="${esc(state.authName || "")}" required>` : ""}
+        <label for="email">Почта</label>
+        <input id="email" name="email" type="email" autocomplete="email" value="${esc(state.authEmail || "")}" required>
+        ${reset ? "" : `<label for="password">Пароль</label><input id="password" name="password" type="password" autocomplete="${up ? "new-password" : "current-password"}" required>`}
+        <p class="error">${esc(state.error)}</p>
+        <div class="actions">
+          <button class="primary" ${state.busy ? "disabled" : ""}>${reset ? "Отправить письмо" : up ? "Создать аккаунт" : "Войти"}</button>
+          ${up || reset ? `<button type="button" class="ghost" data-action="auth-in">Назад ко входу</button>` : `
+            <button type="button" class="ghost" data-action="auth-up">Регистрация</button>
+            <button type="button" class="ghost" data-action="auth-reset">Не помню пароль</button>`}
+        </div>
+      </form>
+    </div>`;
+}
+
+function renderGate() {
+  return `
+    <div class="center">
+      <form class="card" data-form="join">
+        <h1>Код группы</h1>
+        <p class="lead">Введите код из приложения, чтобы видеть те же даты.</p>
+        <label>Код</label>
+        <input name="code" maxlength="6" placeholder="ABC123" required>
+        <p class="error">${esc(state.error)}</p>
+        <div class="actions">
+          <button class="primary" ${state.busy ? "disabled" : ""}>Войти в группу</button>
+          <button type="button" class="ghost" data-action="out">Выйти из аккаунта</button>
+        </div>
+      </form>
+    </div>`;
+}
+
+function renderCalendar() {
+  const cells = monthGrid(state.month);
+  const title = `${MONTHS[state.month.getMonth()]} ${state.month.getFullYear()}`;
+  const uid = state.profile.uid;
+  return `
+    <div class="panel">
+      <div class="month-bar">
+        <h2>${title}</h2>
+        <div class="nav">
+          <button class="icon-btn" data-action="prev" aria-label="Предыдущий">‹</button>
+          <button class="icon-btn" data-action="today" title="Сегодня">•</button>
+          <button class="icon-btn" data-action="next" aria-label="Следующий">›</button>
+        </div>
+      </div>
+      <div class="weekdays">${WEEKDAYS.map((d) => `<span>${d}</span>`).join("")}</div>
+      <div class="grid">
+        ${cells.map((day) => {
+          if (!day) return `<div class="day empty"></div>`;
+          const events = state.concerts.filter((c) => concertCovers(c, day));
+          const mine = winningAbsence(uid, day);
+          const others = state.members.filter((m) => m.uid !== uid).map((m) => {
+            const mark = winningAbsence(m.uid, day);
+            return mark ? { name: m.displayName, status: mark.status } : null;
+          }).filter(Boolean);
+          return `
+            <button class="day ${day === todayIso() ? "today" : ""} ${day === state.selected ? "selected" : ""}" data-action="pick" data-day="${day}">
+              <span class="n">${Number(day.slice(-2))}</span>
+              <span class="dots">${events.map((c) => `<span class="dot ${c.status || "confirmed"}"></span>`).join("")}</span>
+              <span class="marks">
+                ${mine ? `<span class="pill ${mine.status}">${MARK[mine.status]}</span>` : ""}
+                ${others.slice(0, 2).map((o) => `<span class="pill ${o.status}">${esc(o.name.split(" ")[0])}</span>`).join("")}
+              </span>
+            </button>`;
+        }).join("")}
+      </div>
+    </div>`;
+}
+
+function renderDay() {
+  const day = state.selected;
+  const events = state.concerts.filter((c) => concertCovers(c, day)).sort((a, b) => cmp(a.date, b.date) || cmp(a.title, b.title));
+  const people = state.members.map((m) => ({ member: m, mark: winningAbsence(m.uid, day) }));
+  const mine = winningAbsence(state.profile.uid, day);
+  return `
+    <div class="panel">
+      <div class="day-head">
+        <div>
+          <h2>${ruFull(day)}</h2>
+          <p class="hint">${state.group?.name || "Группа"}</p>
+        </div>
+        <button class="primary" data-action="event-new">Событие</button>
+      </div>
+      <div class="quick">
+        ${["can", "cannot", "maybe"].map((status) => `
+          <button class="chip ${mine?.status === status ? `on-${status}` : ""}" data-action="quick" data-status="${status}">${MARK[status]}</button>
+        `).join("")}
+        <button class="chip" data-action="mark-new">Несколько дней</button>
+      </div>
+      ${state.error ? `<p class="error">${esc(state.error)}</p>` : ""}
+      ${events.length ? events.map((c) => `
+        <button class="item" data-action="event-edit" data-id="${c.id}">
+          <span class="badge ${c.status || "confirmed"}">${STATUS[c.status] || "Будет"}</span>
+          <b>${esc(c.title)}</b>
+          <div class="meta">${esc(concertLabel(c))}${c.city || c.venue ? ` · ${esc([c.city, c.venue].filter(Boolean).join(", "))}` : ""}</div>
+          ${c.note ? `<div class="meta">${esc(c.note)}</div>` : ""}
+        </button>
+      `).join("") : `<p class="hint">На этот день событий нет.</p>`}
+      <div class="people">
+        ${people.map(({ member, mark }) => `
+          <div class="person">
+            <span>${esc(member.displayName)}${member.uid === state.profile.uid ? " · вы" : ""}</span>
+            <span class="pill ${mark?.status || ""}">${mark ? MARK[mark.status] : "—"}</span>
+          </div>
+        `).join("")}
+      </div>
+    </div>`;
+}
+
+function renderEventModal() {
+  const d = state.modal.draft;
+  const repeating = (d.repeat || "none") !== "none";
+  return `
+    <div class="overlay" data-action="close">
+      <form class="dialog" data-form="event" data-stop="1">
+        <h2>${d.id ? "Событие" : "Новое событие"}</h2>
+        <input type="hidden" name="id" value="${esc(d.id || "")}">
+        <input type="hidden" name="createdBy" value="${esc(d.createdBy || state.profile.uid)}">
+        <label>Название</label>
+        <input name="title" value="${esc(d.title || "")}" required maxlength="119">
+        <div class="row">
+          <div><label>С</label><input type="date" name="date" value="${d.date}" required></div>
+          <div><label>По</label><input type="date" name="endDate" value="${d.endDate || d.date}" required></div>
+        </div>
+        <label>Повтор</label>
+        <select name="repeat">
+          ${Object.entries(REPEAT).map(([k, v]) => `<option value="${k}" ${ (d.repeat || "none") === k ? "selected" : ""}>${v}</option>`).join("")}
+        </select>
+        ${repeating ? `<label>До какой даты</label><input type="date" name="repeatUntil" value="${d.repeatUntil || ""}">` : ""}
+        <div class="row">
+          <div><label>Город</label><input name="city" value="${esc(d.city || "")}"></div>
+          <div><label>Площадка</label><input name="venue" value="${esc(d.venue || "")}"></div>
+        </div>
+        <label>Статус</label>
+        <select name="status">
+          ${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${(d.status || "confirmed") === k ? "selected" : ""}>${v}</option>`).join("")}
+        </select>
+        <label>Заметка, время</label>
+        <textarea name="note" maxlength="499">${esc(d.note || "")}</textarea>
+        ${d.id ? `
+          <p class="hint">Кто едет</p>
+          <div class="rsvp">
+            ${Object.entries(RSVP).map(([k, v]) => `<button type="button" class="chip" data-action="rsvp" data-id="${d.id}" data-status="${k}">${v}</button>`).join("")}
+          </div>` : ""}
+        <p class="error">${esc(state.error)}</p>
+        <div class="actions">
+          <button class="primary" ${state.busy ? "disabled" : ""}>Сохранить</button>
+          ${d.id ? `<button type="button" class="danger" data-action="delete-event" data-id="${d.id}">Удалить</button>` : ""}
+          <button type="button" class="ghost" data-action="close">Закрыть</button>
+        </div>
+      </form>
+    </div>`;
+}
+
+function renderMarkModal() {
+  const d = state.modal.draft;
+  const start = d.startDate || d.start || state.selected;
+  const end = d.endDate || d.end || start;
+  return `
+    <div class="overlay" data-action="close">
+      <form class="dialog" data-form="mark" data-stop="1">
+        <h2>Отметка</h2>
+        <input type="hidden" name="id" value="${esc(d.id || "")}">
+        <label>Как</label>
+        <select name="status">
+          ${Object.entries(MARK).map(([k, v]) => `<option value="${k}" ${(d.status || "cannot") === k ? "selected" : ""}>${v}</option>`).join("")}
+        </select>
+        <div class="row">
+          <div><label>С</label><input type="date" name="start" value="${start}" required></div>
+          <div><label>По</label><input type="date" name="end" value="${end}" required></div>
+        </div>
+        <label>Заметка</label>
+        <textarea name="note" maxlength="299">${esc(d.note || "")}</textarea>
+        <p class="error">${esc(state.error)}</p>
+        <div class="actions">
+          <button class="primary" ${state.busy ? "disabled" : ""}>Сохранить</button>
+          ${d.id ? `<button type="button" class="danger" data-action="delete-mark" data-id="${d.id}">Удалить</button>` : ""}
+          <button type="button" class="ghost" data-action="close">Закрыть</button>
+        </div>
+      </form>
+    </div>`;
+}
+
+function renderApp() {
+  return `
+    <div class="shell">
+      <div class="top">
+        <div>
+          <h1>Календарь группы</h1>
+          <p class="hint">${esc(state.group?.name || "Загрузка…")}</p>
+        </div>
+        <div class="who">
+          <span>${esc(state.profile.displayName)}</span>
+          <button class="ghost" data-action="out">Выйти</button>
+        </div>
+      </div>
+      <div class="layout">${renderCalendar()}${renderDay()}</div>
+    </div>
+    ${state.modal?.type === "event" ? renderEventModal() : ""}
+    ${state.modal?.type === "mark" ? renderMarkModal() : ""}`;
+}
+
+function render() {
+  if (state.screen === "boot") root.innerHTML = `<div class="center"><p class="hint">Загрузка…</p></div>`;
+  else if (state.screen === "auth") root.innerHTML = renderAuth();
+  else if (state.screen === "gate") root.innerHTML = renderGate();
+  else root.innerHTML = renderApp();
+}
+
+render();
