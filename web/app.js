@@ -40,6 +40,52 @@ const WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 const REPEAT = { none: "Разово", daily: "Каждый день", weekly: "Каждую неделю", monthly: "Каждый месяц", yearly: "Каждый год" };
 const STATUS = { idea: "Идея", confirmed: "Будет", cancelled: "Нет" };
 const MARK = { can: "Могу", cannot: "Нет", maybe: "Может" };
+const COLORS = {
+  blue: "Синий",
+  green: "Зелёный",
+  red: "Красный",
+  orange: "Оранжевый",
+  purple: "Фиолетовый",
+  pink: "Розовый",
+  teal: "Бирюзовый",
+  slate: "Серый",
+};
+const HOLIDAYS = {
+  "2027-01-01": "Новогодние каникулы",
+  "2027-01-02": "Новогодние каникулы",
+  "2027-01-03": "Новогодние каникулы",
+  "2027-01-04": "Новогодние каникулы",
+  "2027-01-05": "Новогодние каникулы",
+  "2027-01-06": "Новогодние каникулы",
+  "2027-01-07": "Рождество",
+  "2027-01-08": "Новогодние каникулы",
+  "2027-02-23": "День защитника Отечества",
+  "2027-03-08": "8 марта",
+  "2027-05-01": "Праздник Весны и Труда",
+  "2027-05-09": "День Победы",
+  "2027-06-12": "День России",
+  "2027-11-04": "День народного единства",
+};
+const TRANSFERRED = new Set(["2026-12-31", "2027-02-22", "2027-05-03", "2027-05-10", "2027-06-14", "2027-11-05", "2027-12-31"]);
+const SHORT_DAYS = new Set(["2027-02-20", "2027-04-30", "2027-06-11", "2027-11-03"]);
+
+function officialDay(day) {
+  if (HOLIDAYS[day]) return { title: HOLIDAYS[day], kind: "holiday" };
+  if (TRANSFERRED.has(day)) return { title: "Выходной", kind: "off" };
+  if (SHORT_DAYS.has(day)) return { title: "Короткий день", kind: "short" };
+  if (String(day).startsWith("2027-")) {
+    const n = parseIso(day).getDay();
+    if (n === 0 || n === 6) return { title: "Выходной", kind: "off" };
+  }
+  return null;
+}
+
+function isOff(day) {
+  const info = officialDay(day);
+  if (info) return info.kind !== "short";
+  const n = parseIso(day).getDay();
+  return n === 0 || n === 6;
+}
 const RSVP = { going: "Еду", not_going: "Не еду", maybe: "Под вопросом" };
 
 const state = {
@@ -119,7 +165,7 @@ function chipsOn(day) {
     kind: "event",
     id: c.id,
     text: eventChipText(c),
-    tone: c.status || "confirmed",
+    tone: c.color ? `c-${c.color}` : (c.status || "confirmed"),
   }));
   const seen = new Set();
   const marks = [];
@@ -172,6 +218,7 @@ function yearlyStart(c, start) {
 function isOccurrenceStart(c, start) {
   if (start < c.date) return false;
   if (c.repeatUntil && start > c.repeatUntil) return false;
+  if ((c.exceptDates || []).includes(start)) return false;
   if (c.repeat === "daily") return true;
   if (c.repeat === "weekly") return daysBetween(c.date, start) % 7 === 0;
   if (c.repeat === "monthly") return monthlyStart(c, start);
@@ -190,6 +237,94 @@ function occurrenceStartOn(c, day) {
     step += 1;
   }
   return null;
+}
+
+function nextMonthly(c, from) {
+  const anchor = parseIso(c.date);
+  let cursor = parseIso(from);
+  for (let i = 0; i < 48; i += 1) {
+    const candidate = new Date(cursor.getFullYear(), cursor.getMonth(), anchor.getDate());
+    if (candidate.getDate() === anchor.getDate()) {
+      const day = iso(candidate);
+      if (day >= c.date && day >= from) return !c.repeatUntil || day <= c.repeatUntil ? day : null;
+    }
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+  }
+  return null;
+}
+
+function nextYearly(c, from) {
+  const anchor = parseIso(c.date);
+  let year = parseIso(from).getFullYear();
+  for (let i = 0; i < 12; i += 1) {
+    const candidate = new Date(year, anchor.getMonth(), anchor.getDate());
+    if (candidate.getMonth() === anchor.getMonth()) {
+      const day = iso(candidate);
+      if (day >= c.date && day >= from) return !c.repeatUntil || day <= c.repeatUntil ? day : null;
+    }
+    year += 1;
+  }
+  return null;
+}
+
+function alignedStart(c, from) {
+  const begin = from < c.date ? c.date : from;
+  if (c.repeatUntil && begin > c.repeatUntil) return null;
+  if (!c.repeat || c.repeat === "none") return c.date >= from ? c.date : null;
+  if (c.repeat === "daily") return begin;
+  if (c.repeat === "weekly") {
+    const rem = daysBetween(c.date, begin) % 7;
+    return rem === 0 ? begin : iso(addDays(parseIso(begin), 7 - rem));
+  }
+  if (c.repeat === "monthly") return nextMonthly(c, begin);
+  if (c.repeat === "yearly") return nextYearly(c, begin);
+  return null;
+}
+
+function stepAfter(c, start) {
+  if (c.repeat === "daily") return iso(addDays(parseIso(start), 1));
+  if (c.repeat === "weekly") return iso(addDays(parseIso(start), 7));
+  if (c.repeat === "monthly") return nextMonthly(c, iso(addDays(parseIso(start), 1)));
+  if (c.repeat === "yearly") return nextYearly(c, iso(addDays(parseIso(start), 1)));
+  return null;
+}
+
+function nextStartOnOrAfter(c, from) {
+  let cursor = from;
+  for (let i = 0; i < 480; i += 1) {
+    const candidate = alignedStart(c, cursor);
+    if (!candidate) return null;
+    if (c.repeatUntil && candidate > c.repeatUntil) return null;
+    if (isOccurrenceStart(c, candidate)) return candidate;
+    const stepped = stepAfter(c, candidate);
+    if (!stepped || stepped <= candidate) return null;
+    cursor = stepped;
+  }
+  return null;
+}
+
+function afterCut(c, day, cut) {
+  if (cut === "all" || !c.repeat || c.repeat === "none") return null;
+  const start = occurrenceStartOn(c, day);
+  if (!start) return c;
+  const except = new Set(c.exceptDates || []);
+  if (cut === "only") {
+    except.add(start);
+    return { ...c, exceptDates: [...except].sort() };
+  }
+  if (cut === "following") {
+    if (start <= c.date) return null;
+    const until = iso(addDays(parseIso(start), -1));
+    return { ...c, repeatUntil: until, exceptDates: [...except].filter((item) => item <= until) };
+  }
+  const next = nextStartOnOrAfter(c, iso(addDays(parseIso(start), 1)));
+  if (!next) return null;
+  return {
+    ...c,
+    date: next,
+    endDate: iso(addDays(parseIso(next), spanDays(c))),
+    exceptDates: [...except].filter((item) => item >= next),
+  };
 }
 
 function concertCovers(c, day) { return occurrenceStartOn(c, day) != null; }
@@ -257,6 +392,8 @@ function listenGroup(groupId) {
         repeat: x.repeat || "none",
         repeatUntil: x.repeatUntil || null,
         importUid: x.importUid || "",
+        color: x.color || "",
+        exceptDates: x.exceptDates || [],
       };
     });
     render();
@@ -522,6 +659,10 @@ async function saveConcert(draft) {
   if (draft.importUid) data.importUid = draft.importUid;
   if (draft.repeat && draft.repeat !== "none" && draft.repeatUntil) data.repeatUntil = draft.repeatUntil;
   else data.repeatUntil = deleteField();
+  if (draft.color && COLORS[draft.color]) data.color = draft.color;
+  else data.color = deleteField();
+  if (draft.exceptDates && draft.exceptDates.length) data.exceptDates = draft.exceptDates;
+  else data.exceptDates = deleteField();
   await setDoc(ref, data, { merge: true });
   return ref.id;
 }
@@ -556,6 +697,8 @@ function readEventDraft(form) {
     status: formVal(form, "status") || "confirmed",
     repeat: formVal(form, "repeat") || "none",
     repeatUntil: formVal(form, "repeatUntil") || null,
+    color: formVal(form, "color") || "blue",
+    exceptDates: (state.modal?.draft?.exceptDates) || [],
   };
 }
 
@@ -708,7 +851,14 @@ root.addEventListener("click", (e) => {
   }
   if (action === "event-edit") {
     const concert = state.concerts.find((c) => c.id === node.dataset.id);
-    if (concert) { state.modal = { type: "event", draft: { ...concert, endDate: lastDay(concert), repeat: concert.repeat || "none" } }; render(); }
+    if (concert) {
+      state.modal = {
+        type: "event",
+        occurrence: node.dataset.day || state.selected,
+        draft: { ...concert, endDate: lastDay(concert), repeat: concert.repeat || "none" },
+      };
+      render();
+    }
   }
   if (action === "mark-new") {
     const mine = exactDay(state.profile.uid, state.selected);
@@ -737,8 +887,33 @@ root.addEventListener("click", (e) => {
   }
   if (action === "close") { state.modal = null; render(); }
   if (action === "delete-event") {
+    const concert = state.concerts.find((c) => c.id === node.dataset.id);
+    const day = node.dataset.day || state.modal?.occurrence || state.selected || concert?.date;
+    if (!concert || !concert.repeat || concert.repeat === "none") {
+      run(async () => {
+        await deleteDoc(doc(db, "groups", state.profile.groupId, "concerts", node.dataset.id));
+        state.modal = null;
+      });
+    } else {
+      state.modal = { type: "delete-series", id: concert.id, day, title: concert.title };
+      render();
+    }
+  }
+  if (action === "delete-series") {
+    const concert = state.concerts.find((c) => c.id === node.dataset.id);
+    const cut = node.dataset.cut;
+    if (!concert) return;
     run(async () => {
-      await deleteDoc(doc(db, "groups", state.profile.groupId, "concerts", node.dataset.id));
+      const next = afterCut(concert, node.dataset.day, cut);
+      if (!next) {
+        await deleteDoc(doc(db, "groups", state.profile.groupId, "concerts", concert.id));
+      } else {
+        await saveConcert({
+          ...next,
+          endDate: next.endDate || lastDay(next),
+          createdBy: next.createdBy || state.profile.uid,
+        });
+      }
       state.modal = null;
     });
   }
@@ -835,10 +1010,7 @@ function renderCalendar() {
   const cells = monthBoard(state.month);
   const title = `${MONTHS[state.month.getMonth()]} ${state.month.getFullYear()}`;
   const mine = winningAbsence(state.profile.uid, state.selected);
-  const weekend = (day) => {
-    const n = parseIso(day).getDay();
-    return n === 0 || n === 6;
-  };
+  const selectedOfficial = officialDay(state.selected);
   return `
     <header class="bar">
       <div class="brand-line">
@@ -859,6 +1031,7 @@ function renderCalendar() {
     </header>
     <div class="strip">
       <b>${ruFull(state.selected)}</b>
+      ${selectedOfficial ? `<span class="${selectedOfficial.kind === "short" ? "hint" : "off-label"}">${esc(selectedOfficial.title)}</span>` : ""}
       ${["can", "cannot", "maybe"].map((status) => `
         <button class="chip ${mine?.status === status ? `on-${status}` : ""}" data-action="quick" data-status="${status}">${MARK[status]}</button>
       `).join("")}
@@ -872,13 +1045,14 @@ function renderCalendar() {
         const extra = chips.length - 4;
         const visible = chips.slice(0, 4);
         return `
-          <div class="cell ${outside ? "out" : ""} ${weekend(day) ? "weekend" : ""} ${day === todayIso() ? "today" : ""} ${day === state.selected ? "selected" : ""}" data-action="pick" data-day="${day}">
+          <div class="cell ${outside ? "out" : ""} ${isOff(day) ? "off" : ""} ${day === todayIso() ? "today" : ""} ${day === state.selected ? "selected" : ""}" data-action="pick" data-day="${day}">
             <span class="n">${Number(day.slice(-2))}</span>
+            ${officialDay(day)?.kind === "holiday" ? `<span class="holiday">${esc(officialDay(day).title)}</span>` : ""}
             <div class="chips">
               ${visible.map((chip) => {
                 const canOpen = chip.kind === "event" || chip.uid === state.profile.uid;
                 const action = chip.kind === "event" ? "event-edit" : "mark-edit";
-                return `<button type="button" class="plaque ${chip.tone}" ${canOpen ? `data-action="${action}" data-id="${chip.id}"` : "disabled"}>${esc(chip.text)}</button>`;
+                return `<button type="button" class="plaque ${chip.tone}" ${canOpen ? `data-action="${action}" data-id="${chip.id}" data-day="${day}"` : "disabled"}>${esc(chip.text)}</button>`;
               }).join("")}
               ${extra > 0 ? `<span class="more">+${extra}</span>` : ""}
             </div>
@@ -911,6 +1085,15 @@ function renderEventModal() {
           <div><label>Город</label><input name="city" value="${esc(d.city || "")}"></div>
           <div><label>Площадка</label><input name="venue" value="${esc(d.venue || "")}"></div>
         </div>
+        <label>Цвет</label>
+        <div class="swatches">
+          ${Object.entries(COLORS).map(([key, label]) => `
+            <label class="swatch-wrap" title="${label}">
+              <input type="radio" name="color" value="${key}" ${(d.color || "blue") === key ? "checked" : ""}>
+              <span class="swatch c-${key}"></span>
+            </label>
+          `).join("")}
+        </div>
         <label>Статус</label>
         <select name="status">
           ${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${(d.status || "confirmed") === k ? "selected" : ""}>${v}</option>`).join("")}
@@ -925,7 +1108,7 @@ function renderEventModal() {
         <p class="error">${esc(state.error)}</p>
         <div class="actions">
           <button class="primary" ${state.busy ? "disabled" : ""}>Сохранить</button>
-          ${d.id ? `<button type="button" class="danger" data-action="delete-event" data-id="${d.id}">Удалить</button>` : ""}
+          ${d.id ? `<button type="button" class="danger" data-action="delete-event" data-id="${d.id}" data-day="${state.selected || d.date}">Удалить</button>` : ""}
           <button type="button" class="ghost" data-action="close">Закрыть</button>
         </div>
       </form>
@@ -961,12 +1144,31 @@ function renderMarkModal() {
     </div>`;
 }
 
+function renderDeleteSeries() {
+  const modal = state.modal;
+  return `
+    <div class="overlay" data-action="close">
+      <div class="dialog" data-stop="1">
+        <h2>Удалить ${esc(ruFull(modal.day))}?</h2>
+        <p class="hint">${esc(modal.title)}. Это повтор. Эта дата входит и в следующие, и в предыдущие.</p>
+        <div class="actions column">
+          <button type="button" class="danger" data-action="delete-series" data-id="${esc(modal.id)}" data-day="${esc(modal.day)}" data-cut="only">Только это</button>
+          <button type="button" class="danger" data-action="delete-series" data-id="${esc(modal.id)}" data-day="${esc(modal.day)}" data-cut="following">Все следующие</button>
+          <button type="button" class="danger" data-action="delete-series" data-id="${esc(modal.id)}" data-day="${esc(modal.day)}" data-cut="previous">Все предыдущие</button>
+          <button type="button" class="danger" data-action="delete-series" data-id="${esc(modal.id)}" data-day="${esc(modal.day)}" data-cut="all">Все</button>
+          <button type="button" class="ghost" data-action="close">Отмена</button>
+        </div>
+      </div>
+    </div>`;
+}
+
 function renderApp() {
   return `
     <div class="app">
       ${renderCalendar()}
     </div>
     ${state.modal?.type === "event" ? renderEventModal() : ""}
+    ${state.modal?.type === "delete-series" ? renderDeleteSeries() : ""}
     ${state.modal?.type === "mark" ? renderMarkModal() : ""}
     ${state.modal?.type === "import" ? renderImportModal() : ""}`;
 }

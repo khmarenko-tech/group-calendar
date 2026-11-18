@@ -1,17 +1,22 @@
 package ru.sostav.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -31,7 +36,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ru.sostav.logic.Availability
@@ -85,6 +93,69 @@ fun concertColor(status: ConcertStatus): Color = when (status) {
     ConcertStatus.CONFIRMED -> MaterialTheme.colorScheme.primary
     ConcertStatus.IDEA -> MaterialTheme.colorScheme.tertiary
     ConcertStatus.CANCELLED -> MaterialTheme.colorScheme.outline
+}
+
+data class EventSwatch(
+    val key: String,
+    val label: String,
+    val fill: Color,
+    val on: Color,
+    val fillDark: Color,
+    val onDark: Color,
+)
+
+val eventSwatches = listOf(
+    EventSwatch("blue", "Синий", Color(0xFF1D4ED8), Color.White, Color(0xFF93C5FD), Color(0xFF0F172A)),
+    EventSwatch("green", "Зелёный", Color(0xFF047857), Color.White, Color(0xFF6EE7B7), Color(0xFF064E3B)),
+    EventSwatch("red", "Красный", Color(0xFFB91C1C), Color.White, Color(0xFFFCA5A5), Color(0xFF7F1D1D)),
+    EventSwatch("orange", "Оранжевый", Color(0xFFC2410C), Color.White, Color(0xFFFDBA74), Color(0xFF7C2D12)),
+    EventSwatch("purple", "Фиолетовый", Color(0xFF6D28D9), Color.White, Color(0xFFDDD6FE), Color(0xFF2E1065)),
+    EventSwatch("pink", "Розовый", Color(0xFFBE185D), Color.White, Color(0xFFFBCFE8), Color(0xFF831843)),
+    EventSwatch("teal", "Бирюзовый", Color(0xFF0F766E), Color.White, Color(0xFF99F6E4), Color(0xFF134E4A)),
+    EventSwatch("slate", "Серый", Color(0xFF475569), Color.White, Color(0xFFCBD5E1), Color(0xFF1E293B)),
+)
+
+@Composable
+fun eventFill(colorKey: String, status: ConcertStatus): Color {
+    val swatch = eventSwatches.find { it.key == colorKey }
+    if (swatch != null) return if (isSystemInDarkTheme()) swatch.fillDark else swatch.fill
+    return concertColor(status)
+}
+
+@Composable
+fun eventOn(colorKey: String, status: ConcertStatus): Color {
+    val swatch = eventSwatches.find { it.key == colorKey }
+    if (swatch != null) return if (isSystemInDarkTheme()) swatch.onDark else swatch.on
+    return concertOnColor(status)
+}
+
+@Composable
+fun ColorPicker(selected: String, onSelect: (String) -> Unit) {
+    val dark = isSystemInDarkTheme()
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        eventSwatches.forEach { swatch ->
+            val on = selected == swatch.key
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .border(
+                        width = if (on) 3.dp else 1.dp,
+                        color = if (on) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline,
+                        shape = CircleShape,
+                    )
+                    .padding(6.dp)
+                    .clip(CircleShape)
+                    .background(if (dark) swatch.fillDark else swatch.fill)
+                    .clickable { onSelect(swatch.key) }
+                    .semantics { contentDescription = swatch.label },
+            )
+        }
+    }
 }
 
 @Composable

@@ -18,6 +18,7 @@ import ru.sostav.logic.Absence
 import ru.sostav.logic.Availability
 import ru.sostav.logic.Concert
 import ru.sostav.logic.Rsvp
+import ru.sostav.logic.SeriesCut
 import ru.sostav.logic.allDayParts
 import ru.sostav.logic.exactDay
 import java.time.LocalDate
@@ -93,7 +94,11 @@ class GroupDataViewModel : ViewModel() {
                     note = note.ifBlank { existing?.note.orEmpty() },
                 )
                 val id = Graph.schedule.saveAbsence(groupId, draft)
-                val next = absences.filterNot { it.id == existing?.id } + draft.copy(id = id)
+                val saved = draft.copy(id = id)
+                val next = absences.filterNot { it.id == existing?.id } + saved
+                Graph.schedule.notifyMark(
+                    groupId, uid, myName, members.map { it.uid }, saved, "mark_$id",
+                )
                 Graph.schedule.syncConflicts(
                     groupId, uid, myName, members.map { it.uid }, concerts, next, date, date,
                 )
@@ -106,7 +111,16 @@ class GroupDataViewModel : ViewModel() {
         viewModelScope.launch {
             runCatching {
                 val id = Graph.schedule.saveAbsence(groupId, draft)
-                val next = absences.filterNot { it.id == draft.id || it.id == previous?.id } + draft.copy(id = id)
+                val saved = draft.copy(id = id)
+                val next = absences.filterNot { it.id == draft.id || it.id == previous?.id } + saved
+                if (previous != null && previous.id != id) {
+                    Graph.schedule.notifyMark(
+                        groupId, uid, myName, members.map { it.uid }, null, "mark_${previous.id}",
+                    )
+                }
+                Graph.schedule.notifyMark(
+                    groupId, uid, myName, members.map { it.uid }, saved, "mark_$id",
+                )
                 val start = kotlin.comparisons.minOf(draft.start, previous?.start ?: draft.start)
                 val end = kotlin.comparisons.maxOf(draft.end, previous?.end ?: draft.end)
                 Graph.schedule.syncConflicts(
@@ -121,6 +135,9 @@ class GroupDataViewModel : ViewModel() {
             runCatching {
                 Graph.schedule.deleteAbsence(groupId, absence.id)
                 val next = absences.filterNot { it.id == absence.id }
+                Graph.schedule.notifyMark(
+                    groupId, uid, myName, members.map { it.uid }, null, "mark_${absence.id}",
+                )
                 Graph.schedule.syncConflicts(
                     groupId, uid, myName, members.map { it.uid }, concerts, next, absence.start, absence.end,
                 )
@@ -129,23 +146,41 @@ class GroupDataViewModel : ViewModel() {
     }
 
     suspend fun saveConcert(draft: Concert): String {
-        val created = draft.id.isBlank()
         val id = Graph.schedule.saveConcert(groupId, draft)
-        if (created) {
-            Graph.schedule.notifyNewConcert(
-                groupId,
-                draft.copy(id = id),
-                uid,
-                members.map { it.uid },
-            )
-        }
+        Graph.schedule.notifyNewConcert(
+            groupId,
+            draft.copy(id = id),
+            uid,
+            myName,
+            members.map { it.uid },
+        )
         return id
+    }
+
+    suspend fun importConcerts(drafts: List<Concert>): Int {
+        var added = 0
+        drafts.forEach { draft ->
+            Graph.schedule.saveConcert(groupId, draft)
+            added += 1
+        }
+        Graph.schedule.notifyImportedConcerts(groupId, uid, myName, members.map { it.uid }, added)
+        return added
     }
 
     fun deleteConcert(concertId: String) {
         viewModelScope.launch {
             runCatching { Graph.schedule.deleteConcert(groupId, concertId) }
                 .onFailure { error = it.userMessage() }
+        }
+    }
+
+    fun deleteConcertPart(concert: Concert, day: LocalDate, cut: SeriesCut) {
+        viewModelScope.launch {
+            runCatching {
+                val next = concert.afterCut(day, cut)
+                if (next == null) Graph.schedule.deleteConcert(groupId, concert.id)
+                else Graph.schedule.saveConcert(groupId, next)
+            }.onFailure { error = it.userMessage() }
         }
     }
 

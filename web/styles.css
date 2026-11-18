@@ -151,7 +151,9 @@ textarea { min-height: 88px; resize: vertical; }
   overflow: hidden;
   cursor: pointer;
 }
-.cell.weekend { background: #faf8f5; }
+.cell.off { background: #fff7f7; }
+.cell.off .n { color: #b91c1c; }
+.holiday, .off-label { color: #b91c1c; font-size: 11px; line-height: 1.2; }
 .cell.out { color: #b0a89f; background: #fcfbf9; }
 .cell.selected { background: #eef4ff; }
 .cell.today .n {
@@ -188,6 +190,21 @@ textarea { min-height: 88px; resize: vertical; }
 .plaque.can { background: #d1fae5; color: #065f46; }
 .plaque.cannot { background: #fecaca; color: #991b1b; }
 .plaque.maybe { background: #fef3c7; color: #92400e; }
+.plaque.c-blue { background: #dbeafe; color: #1e3a8a; }
+.plaque.c-green { background: #d1fae5; color: #065f46; }
+.plaque.c-red { background: #fee2e2; color: #991b1b; }
+.plaque.c-orange { background: #ffedd5; color: #9a3412; }
+.plaque.c-purple { background: #ede9fe; color: #5b21b6; }
+.plaque.c-pink { background: #fce7f3; color: #9d174d; }
+.plaque.c-teal { background: #ccfbf1; color: #115e59; }
+.plaque.c-slate { background: #e2e8f0; color: #1e293b; }
+.swatches { display: flex; gap: 8px; flex-wrap: wrap; }
+.swatch-wrap { display: grid; place-items: center; width: 44px; height: 44px; }
+.swatch-wrap input { position: absolute; opacity: 0; }
+.swatch { width: 28px; height: 28px; border-radius: 99px; display: block; border: 3px solid transparent; }
+.swatch-wrap input:checked + .swatch { border-color: #0f172a; }
+.swatch-wrap input:focus-visible + .swatch { outline: 2px solid #1d4ed8; }
+.actions.column { flex-direction: column; align-items: stretch; }
 .plaque:disabled { opacity: 1; cursor: default; }
 .more { font-size: 12px; color: var(--muted); padding-left: 6px; }
 .quick { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }

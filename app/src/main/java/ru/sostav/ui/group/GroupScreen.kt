@@ -39,6 +39,7 @@ import ru.sostav.data.userMessage
 import ru.sostav.ui.GroupDataViewModel
 import ru.sostav.ui.components.ConfirmDialog
 import ru.sostav.ui.components.InboxButton
+import ru.sostav.ui.update.rememberUpdateViewModel
 import java.util.Locale
 
 @Composable
@@ -47,6 +48,7 @@ fun GroupScreen(data: GroupDataViewModel, onSignOut: () -> Unit, onInbox: () -> 
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
+    val updates = rememberUpdateViewModel()
     var name by rememberSaveable(group?.name) { mutableStateOf(group?.name.orEmpty()) }
     var myName by rememberSaveable(data.myName) { mutableStateOf(data.me?.displayName ?: data.myName) }
     var message by rememberSaveable { mutableStateOf<String?>(null) }
@@ -178,6 +180,15 @@ fun GroupScreen(data: GroupDataViewModel, onSignOut: () -> Unit, onInbox: () -> 
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        OutlinedButton(
+            onClick = { updates.check(force = true) },
+            enabled = !updates.checking,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+        ) { Text(if (updates.checking) "Проверяю…" else "Проверить обновление") }
+        val updateInfo = updates.info
+        if (!updateInfo.isNullOrBlank()) {
+            Text(updateInfo, style = MaterialTheme.typography.bodyMedium)
+        }
     }
 
     if (confirmCode) {

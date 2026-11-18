@@ -14,6 +14,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -23,6 +24,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -43,21 +45,24 @@ import ru.sostav.logic.Availability
 import ru.sostav.logic.Concert
 import ru.sostav.logic.ConcertStatus
 import ru.sostav.logic.DayPart
+import ru.sostav.logic.RepeatPeriod
 import ru.sostav.logic.Rsvp
+import ru.sostav.logic.SeriesCut
 import ru.sostav.logic.blockingAbsences
 import ru.sostav.logic.daysIn
 import ru.sostav.logic.winningAbsence
 import ru.sostav.ui.GroupDataViewModel
+import ru.sostav.ui.whenLabel
 import ru.sostav.ui.components.ChoiceButtons
+import ru.sostav.ui.components.ColorPicker
 import ru.sostav.ui.components.ConcertChip
 import ru.sostav.ui.components.ConfirmDialog
 import ru.sostav.ui.components.DateField
 import ru.sostav.ui.components.EmptyText
 import ru.sostav.ui.components.InboxButton
 import ru.sostav.ui.components.StripeRow
-import ru.sostav.ui.components.concertColor
-import ru.sostav.ui.ru
-import ru.sostav.ui.ruRange
+import ru.sostav.ui.components.eventFill
+import ru.sostav.ui.ruFull
 import java.time.LocalDate
 
 @Composable
@@ -65,11 +70,17 @@ fun ConcertListScreen(
     data: GroupDataViewModel,
     onOpen: (String) -> Unit,
     onCreate: () -> Unit,
+    onImport: () -> Unit,
     onInbox: () -> Unit,
 ) {
     val today = LocalDate.now()
-    val upcoming = data.concerts.filter { !it.lastDay.isBefore(today) }.sortedBy { it.date }
-    val past = data.concerts.filter { it.lastDay.isBefore(today) }.sortedByDescending { it.date }
+    val horizon = today.plusYears(5)
+    val upcoming = data.concerts
+        .filter { it.overlapsRange(today, horizon) }
+        .sortedBy { it.nextStartOnOrAfter(today.minusDays(it.spanDays)) ?: it.date }
+    val past = data.concerts
+        .filter { !it.overlapsRange(today, horizon) }
+        .sortedByDescending { it.date }
     Box(Modifier.fillMaxSize()) {
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -79,6 +90,10 @@ fun ConcertListScreen(
                 Text("События", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                 InboxButton(data.unread, onInbox)
             }
+            OutlinedButton(
+                onClick = onImport,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            ) { Text("Из Яндекс.Календаря") }
             if (data.concerts.isEmpty()) EmptyText("Пока нет событий. Добавьте дату, когда она появится.")
             if (upcoming.isNotEmpty()) Text("Дальше", style = MaterialTheme.typography.titleMedium)
             upcoming.forEach { ConcertRow(it, data, onOpen) }
@@ -103,12 +118,12 @@ private fun ConcertRow(concert: Concert, data: GroupDataViewModel, onOpen: (Stri
         .distinctBy { it.uid }
         .count { it.uid in memberIds }
     val place = listOf(concert.city, concert.venue).filter { it.isNotBlank() }.joinToString(", ")
-    val whenText = concert.date.ruRange(concert.lastDay)
+    val whenText = concert.whenLabel()
     val blockedText = if (blocked > 0 && concert.status != ConcertStatus.CANCELLED) "Не могут: $blocked" else ""
     StripeRow(
         title = concert.title,
         subtitle = listOf(whenText, place, concert.note, blockedText).filter { it.isNotBlank() }.joinToString(" · "),
-        stripe = concertColor(concert.status),
+        stripe = eventFill(concert.color, concert.status),
         onClick = { onOpen(concert.id) },
         trailing = { ConcertChip(concert.status) },
     )
@@ -119,6 +134,7 @@ private fun ConcertRow(concert: Concert, data: GroupDataViewModel, onOpen: (Stri
 fun ConcertDetailScreen(
     data: GroupDataViewModel,
     concertId: String,
+    occurrenceDay: String = "",
     onBack: () -> Unit,
     onEdit: (String) -> Unit,
 ) {
@@ -149,7 +165,7 @@ fun ConcertDetailScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             ConcertChip(concert.status)
-            Text(concert.date.ruRange(concert.lastDay), style = MaterialTheme.typography.titleMedium)
+            Text(concert.whenLabel(), style = MaterialTheme.typography.titleMedium)
             val place = listOf(concert.city, concert.venue).filter { it.isNotBlank() }.joinToString(", ")
             if (place.isNotBlank()) Text(place, style = MaterialTheme.typography.bodyLarge)
             if (concert.note.isNotBlank()) Text(concert.note, style = MaterialTheme.typography.bodyLarge)
@@ -170,11 +186,15 @@ fun ConcertDetailScreen(
             )
             val memberIds = data.members.map { it.uid }.toSet()
             val visibleRsvps = rsvps.filter { it.uid in memberIds }
-            RsvpBlock("Будут", data, concert, visibleRsvps.filter { it.status == Rsvp.GOING }.map { it.uid })
-            RsvpBlock("Не будут", data, concert, visibleRsvps.filter { it.status == Rsvp.NOT_GOING }.map { it.uid })
-            RsvpBlock("Под вопросом", data, concert, visibleRsvps.filter { it.status == Rsvp.MAYBE }.map { it.uid })
+            val going = visibleRsvps.filter { it.status == Rsvp.GOING }.map { it.uid }
+            val notGoing = visibleRsvps.filter { it.status == Rsvp.NOT_GOING }.map { it.uid }
+            val maybe = visibleRsvps.filter { it.status == Rsvp.MAYBE }.map { it.uid }
             val answered = visibleRsvps.map { it.uid }.toSet()
-            RsvpBlock("Не ответили", data, concert, data.members.map { it.uid }.filter { it !in answered })
+            val silent = data.members.map { it.uid }.filter { it !in answered }
+            if (going.isNotEmpty()) RsvpBlock("Будут", data, concert, going)
+            if (notGoing.isNotEmpty()) RsvpBlock("Не будут", data, concert, notGoing)
+            if (maybe.isNotEmpty()) RsvpBlock("Под вопросом", data, concert, maybe)
+            if (silent.isNotEmpty()) RsvpBlock("Не ответили", data, concert, silent)
             if (canEdit) {
                 Button(
                     onClick = { onEdit(concert.id) },
@@ -187,18 +207,53 @@ fun ConcertDetailScreen(
             }
         }
     }
-    if (confirmDelete) {
-        ConfirmDialog(
-            title = "Удалить событие?",
-            body = "Ответы тоже пропадут.",
-            confirm = "Удалить",
-            onConfirm = {
-                confirmDelete = false
-                onBack()
-                data.deleteConcert(concertId)
-            },
-            onDismiss = { confirmDelete = false },
-        )
+    if (confirmDelete && concert != null) {
+        val focus = occurrenceDay.takeIf { it.isNotBlank() }
+            ?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+            ?: concert.nextStartOnOrAfter(LocalDate.now())
+            ?: concert.date
+        if (concert.repeat == RepeatPeriod.NONE) {
+            ConfirmDialog(
+                title = "Удалить событие?",
+                body = "Ответы тоже пропадут.",
+                confirm = "Удалить",
+                onConfirm = {
+                    confirmDelete = false
+                    onBack()
+                    data.deleteConcert(concertId)
+                },
+                onDismiss = { confirmDelete = false },
+            )
+        } else {
+            AlertDialog(
+                onDismissRequest = { confirmDelete = false },
+                title = { Text("Удалить ${focus.ruFull()}?") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Это повтор. Эта дата входит и в следующие, и в предыдущие.")
+                        listOf(
+                            SeriesCut.ONLY_THIS to "Только это",
+                            SeriesCut.FOLLOWING to "Все следующие",
+                            SeriesCut.PREVIOUS to "Все предыдущие",
+                            SeriesCut.ALL to "Все",
+                        ).forEach { (cut, label) ->
+                            TextButton(
+                                onClick = {
+                                    confirmDelete = false
+                                    onBack()
+                                    data.deleteConcertPart(concert, focus, cut)
+                                },
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                            ) { Text(label) }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { confirmDelete = false }) { Text("Отмена") }
+                },
+            )
+        }
     }
 }
 
@@ -216,7 +271,8 @@ private fun RsvpBlock(
     }
     uids.forEach { uid ->
         val member = data.members.find { it.uid == uid }
-        val calendar = winningAbsence(data.absences, uid, concert.date)?.status
+        val whenDay = concert.nextStartOnOrAfter(LocalDate.now()) ?: concert.date
+        val calendar = winningAbsence(data.absences, uid, whenDay)?.status
         Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
             Text(member?.displayName ?: "Участник", style = MaterialTheme.typography.bodyLarge)
             if (calendar == Availability.CANNOT) {
@@ -236,6 +292,9 @@ class ConcertFormViewModel : ViewModel() {
     var venue by mutableStateOf("")
     var note by mutableStateOf("")
     var status by mutableStateOf(ConcertStatus.IDEA)
+    var repeat by mutableStateOf(RepeatPeriod.NONE)
+    var repeatUntil by mutableStateOf<LocalDate?>(null)
+    var color by mutableStateOf("blue")
     private var boundId: String? = null
 
     fun load(concertId: String?, concert: Concert?, dateText: String) {
@@ -249,10 +308,14 @@ class ConcertFormViewModel : ViewModel() {
             venue = concert.venue
             note = concert.note
             status = concert.status
+            repeat = concert.repeat
+            repeatUntil = concert.repeatUntil
+            color = concert.color.ifBlank { "blue" }
             return
         }
         if (boundId != null) return
         boundId = "new"
+        color = "blue"
         dateText.takeIf { it.isNotBlank() }?.let { runCatching { LocalDate.parse(it) }.getOrNull() }?.let {
             date = it
             endDate = it
@@ -310,6 +373,24 @@ fun ConcertFormScreen(
                 if (model.endDate.isBefore(it)) model.endDate = it
             }
             DateField("Конец", model.endDate) { model.endDate = it }
+            Text("Повтор", style = MaterialTheme.typography.labelLarge)
+            RepeatPicker(model.repeat) { period ->
+                model.repeat = period
+                if (period == RepeatPeriod.NONE) {
+                    model.repeatUntil = null
+                } else if (model.repeatUntil == null) {
+                    model.repeatUntil = model.date.plusYears(1)
+                }
+            }
+            if (model.repeat != RepeatPeriod.NONE) {
+                DateField("Повторять до", model.repeatUntil ?: model.date.plusYears(1)) {
+                    model.repeatUntil = it
+                }
+                TextButton(
+                    onClick = { model.repeatUntil = null },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) { Text("Без даты окончания") }
+            }
             OutlinedTextField(
                 value = model.city,
                 onValueChange = { model.city = it.take(80) },
@@ -330,6 +411,8 @@ fun ConcertFormScreen(
                 label = { Text("Заметка: время, сбор, что взять") },
                 modifier = Modifier.fillMaxWidth(),
             )
+            Text("Цвет", style = MaterialTheme.typography.labelLarge)
+            ColorPicker(selected = model.color, onSelect = { model.color = it })
             Text("Статус", style = MaterialTheme.typography.labelLarge)
             ChoiceButtons(
                 options = listOf(
@@ -367,6 +450,10 @@ fun ConcertFormScreen(
                         localError = "Конец раньше начала"
                         return@Button
                     }
+                    if (model.repeat != RepeatPeriod.NONE && model.repeatUntil != null && model.repeatUntil!!.isBefore(model.date)) {
+                        localError = "Конец повтора раньше начала"
+                        return@Button
+                    }
                     val draft = Concert(
                         id = existing?.id.orEmpty(),
                         title = model.title.trim(),
@@ -378,6 +465,10 @@ fun ConcertFormScreen(
                         note = model.note.trim(),
                         status = model.status,
                         createdBy = existing?.createdBy ?: data.uid,
+                        importUid = existing?.importUid.orEmpty(),
+                        repeat = model.repeat,
+                        repeatUntil = if (model.repeat == RepeatPeriod.NONE) null else model.repeatUntil,
+                        color = model.color,
                     )
                     scope.launch {
                         saving = true
@@ -391,6 +482,30 @@ fun ConcertFormScreen(
                 enabled = !saving,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
             ) { Text(if (saving) "Сохраняем…" else "Сохранить") }
+            Box(Modifier.heightIn(min = 24.dp))
+        }
+    }
+}
+
+@Composable
+private fun RepeatPicker(value: RepeatPeriod, onChange: (RepeatPeriod) -> Unit) {
+    val rows = listOf(
+        listOf(
+            RepeatPeriod.NONE to "Разово",
+            RepeatPeriod.DAILY to "День",
+            RepeatPeriod.WEEKLY to "Неделя",
+        ),
+        listOf(
+            RepeatPeriod.MONTHLY to "Месяц",
+            RepeatPeriod.YEARLY to "Год",
+        ),
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        rows.forEach { row ->
+            ChoiceButtons(
+                options = row.map { it.second to (value == it.first) },
+                onSelect = { onChange(row[it].first) },
+            )
         }
     }
 }

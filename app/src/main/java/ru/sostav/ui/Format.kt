@@ -1,8 +1,10 @@
 package ru.sostav.ui
 
 import ru.sostav.logic.Availability
+import ru.sostav.logic.Concert
 import ru.sostav.logic.ConcertStatus
 import ru.sostav.logic.DayPart
+import ru.sostav.logic.RepeatPeriod
 import ru.sostav.logic.Rsvp
 import java.time.Instant
 import java.time.LocalDate
@@ -54,6 +56,37 @@ fun wireAvailability(value: String?): Availability? = when (value) {
     "cannot" -> Availability.CANNOT
     "maybe" -> Availability.MAYBE
     else -> null
+}
+
+fun RepeatPeriod.ru(): String = when (this) {
+    RepeatPeriod.NONE -> "Разово"
+    RepeatPeriod.DAILY -> "Каждый день"
+    RepeatPeriod.WEEKLY -> "Каждую неделю"
+    RepeatPeriod.MONTHLY -> "Каждый месяц"
+    RepeatPeriod.YEARLY -> "Каждый год"
+}
+
+fun RepeatPeriod.wire(): String = when (this) {
+    RepeatPeriod.NONE -> "none"
+    RepeatPeriod.DAILY -> "daily"
+    RepeatPeriod.WEEKLY -> "weekly"
+    RepeatPeriod.MONTHLY -> "monthly"
+    RepeatPeriod.YEARLY -> "yearly"
+}
+
+fun wireRepeat(value: String?): RepeatPeriod = when (value) {
+    "daily" -> RepeatPeriod.DAILY
+    "weekly" -> RepeatPeriod.WEEKLY
+    "monthly" -> RepeatPeriod.MONTHLY
+    "yearly" -> RepeatPeriod.YEARLY
+    else -> RepeatPeriod.NONE
+}
+
+fun Concert.whenLabel(): String {
+    val first = date.ruRange(lastDay)
+    if (repeat == RepeatPeriod.NONE) return first
+    val until = repeatUntil?.let { " до ${it.ruFull()}" }.orEmpty()
+    return "$first · ${repeat.ru()}$until"
 }
 
 fun ConcertStatus.ru(): String = when (this) {

@@ -50,20 +50,24 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ru.sostav.logic.Availability
 import ru.sostav.logic.absenceLabel
+import ru.sostav.logic.OfficialKind
 import ru.sostav.logic.concertsOn
 import ru.sostav.logic.exactDay
+import ru.sostav.logic.isOfficialDayOff
 import ru.sostav.logic.monthGrid
+import ru.sostav.logic.officialDay
 import ru.sostav.logic.winningAbsence
 import ru.sostav.ui.GroupDataViewModel
 import ru.sostav.ui.components.ChoiceButtons
 import ru.sostav.ui.components.StripeRow
 import ru.sostav.ui.components.availabilityDot
-import ru.sostav.ui.components.concertColor
-import ru.sostav.ui.components.concertOnColor
+import ru.sostav.ui.components.eventFill
+import ru.sostav.ui.components.eventOn
 import ru.sostav.ui.monthTitle
 import ru.sostav.ui.ru
 import ru.sostav.ui.ruFull
 import ru.sostav.ui.ruRange
+import ru.sostav.ui.whenLabel
 import java.time.LocalDate
 import java.time.YearMonth
 import java.util.Locale
@@ -76,12 +80,14 @@ private data class DayChip(
     val event: Boolean,
     val status: ru.sostav.logic.ConcertStatus? = null,
     val absenceStatus: Availability? = null,
+    val colorKey: String = "",
+    val holiday: Boolean = false,
 )
 
 @Composable
 fun CalendarScreen(
     data: GroupDataViewModel,
-    onOpenConcert: (String) -> Unit,
+    onOpenConcert: (String, LocalDate) -> Unit,
     onCreateConcert: (LocalDate) -> Unit,
     onCreateAbsence: (LocalDate) -> Unit,
     onEditAbsence: (String) -> Unit,
@@ -98,7 +104,7 @@ fun CalendarScreen(
             Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(bottom = 96.dp),
+                .padding(bottom = 120.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 16.dp, end = 4.dp)) {
                 Text(
@@ -143,13 +149,13 @@ fun CalendarScreen(
                 }
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
-                weekdays.forEach { day ->
+                weekdays.forEachIndexed { index, day ->
                     Text(
                         day,
                         modifier = Modifier.weight(1f),
                         textAlign = TextAlign.Center,
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (index >= 5) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -171,11 +177,13 @@ fun CalendarScreen(
                                         }
                                     },
                                     onChip = { chip ->
-                                        if (chip.event) {
-                                            onOpenConcert(chip.id)
-                                        } else {
-                                            val mine = data.absences.find { it.id == chip.id && it.uid == data.uid }
-                                            if (mine != null) onEditAbsence(chip.id)
+                                        if (!chip.holiday) {
+                                            if (chip.event) {
+                                                onOpenConcert(chip.id, day)
+                                            } else {
+                                                val mine = data.absences.find { it.id == chip.id && it.uid == data.uid }
+                                                if (mine != null) onEditAbsence(chip.id)
+                                            }
                                         }
                                     },
                                 )
@@ -211,8 +219,11 @@ private fun shiftMonth(month: YearMonth, selected: LocalDate, delta: Long): Pair
 }
 
 private fun chipsOn(data: GroupDataViewModel, day: LocalDate): List<DayChip> {
+    val holiday = officialDay(day)
+        ?.takeIf { it.kind == OfficialKind.HOLIDAY }
+        ?.let { DayChip(id = "", text = it.title, event = false, holiday = true) }
     val events = concertsOn(data.concerts, day).map { concert ->
-        DayChip(concert.id, concert.title, event = true, status = concert.status)
+        DayChip(concert.id, concert.title, event = true, status = concert.status, colorKey = concert.color)
     }
     val marks = data.absences
         .filter { it.covers(day) }
@@ -221,7 +232,7 @@ private fun chipsOn(data: GroupDataViewModel, day: LocalDate): List<DayChip> {
             DayChip(absence.id, absenceLabel(absence, name), event = false, absenceStatus = absence.status)
         }
         .distinctBy { it.text.lowercase() }
-    return events + marks
+    return listOfNotNull(holiday) + events + marks
 }
 
 @Composable
@@ -260,6 +271,7 @@ private fun DayCell(
                     day.dayOfMonth.toString(),
                     color = when {
                         day == today -> MaterialTheme.colorScheme.onPrimary
+                        isOfficialDayOff(day) -> MaterialTheme.colorScheme.error
                         selected -> MaterialTheme.colorScheme.primary
                         else -> MaterialTheme.colorScheme.onSurface
                     },
@@ -270,15 +282,15 @@ private fun DayCell(
         }
         val visible = chips.take(3)
         visible.forEach { chip ->
-            val background = if (chip.event && chip.status != null) {
-                concertColor(chip.status)
-            } else {
-                markColor(chip.absenceStatus)
+            val background = when {
+                chip.holiday -> MaterialTheme.colorScheme.error.copy(alpha = 0.16f)
+                chip.event && chip.status != null -> eventFill(chip.colorKey, chip.status)
+                else -> markColor(chip.absenceStatus)
             }
-            val foreground = if (chip.event && chip.status != null) {
-                concertOnColor(chip.status)
-            } else {
-                markOnColor(chip.absenceStatus)
+            val foreground = when {
+                chip.holiday -> MaterialTheme.colorScheme.error
+                chip.event && chip.status != null -> eventOn(chip.colorKey, chip.status)
+                else -> markOnColor(chip.absenceStatus)
             }
             Text(
                 chip.text,
@@ -332,7 +344,7 @@ private fun markOnColor(status: Availability?): Color {
 private fun DayAgenda(
     data: GroupDataViewModel,
     date: LocalDate,
-    onOpenConcert: (String) -> Unit,
+    onOpenConcert: (String, LocalDate) -> Unit,
     onEditAbsence: (String) -> Unit,
     onCreateAbsence: (LocalDate) -> Unit,
 ) {
@@ -361,6 +373,18 @@ private fun DayAgenda(
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(horizontal = 16.dp),
         )
+        officialDay(date)?.let { official ->
+            Text(
+                official.title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (official.kind == OfficialKind.SHORT) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+        }
         if (dayConcerts.isEmpty() && dayMarks.isEmpty()) {
             Text(
                 "В этот день пока пусто",
@@ -371,12 +395,12 @@ private fun DayAgenda(
         }
         dayConcerts.forEach { concert ->
             val place = listOf(concert.city, concert.venue).filter { it.isNotBlank() }.joinToString(", ")
-            val whenText = concert.date.ruRange(concert.lastDay)
+            val whenText = concert.whenLabel()
             StripeRow(
                 title = concert.title,
                 subtitle = listOf(whenText, concert.status.ru(), place, concert.note).filter { it.isNotBlank() }.joinToString(" · "),
-                stripe = concertColor(concert.status),
-                onClick = { onOpenConcert(concert.id) },
+                stripe = eventFill(concert.color, concert.status),
+                onClick = { onOpenConcert(concert.id, date) },
             )
         }
         dayMarks.forEach { absence ->
@@ -387,6 +411,40 @@ private fun DayAgenda(
                 stripe = markColor(absence.status),
                 onClick = { if (absence.uid == data.uid) onEditAbsence(absence.id) },
             )
+        }
+        val exact = exactDay(data.absences, data.uid, date)
+        val winningMine = winningAbsence(data.absences, data.uid, date)
+        Column(
+            Modifier.padding(start = 16.dp, end = 88.dp, top = 8.dp, bottom = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (winningMine != null && exact == null) {
+                Text(
+                    "На эти дни уже стоит «${absenceLabel(winningMine, data.myName)}» с ${winningMine.start.ruRange(winningMine.end)}.",
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                Button(
+                    onClick = { onEditAbsence(winningMine.id) },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                ) { Text("Изменить") }
+            } else {
+                Text("Отметить этот день", style = MaterialTheme.typography.titleSmall)
+                ChoiceButtons(
+                    options = listOf(
+                        "Могу" to (exact?.status == Availability.CAN),
+                        "Нет" to (exact?.status == Availability.CANNOT),
+                        "Может" to (exact?.status == Availability.MAYBE),
+                    ),
+                    onSelect = { index ->
+                        val status = listOf(Availability.CAN, Availability.CANNOT, Availability.MAYBE)[index]
+                        data.saveQuick(date, status)
+                    },
+                )
+            }
+            OutlinedButton(
+                onClick = { onCreateAbsence(date) },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            ) { Text("Несколько дней") }
         }
         Text(
             "Состав",
@@ -428,40 +486,6 @@ private fun DayAgenda(
                     )
                 }
             }
-        }
-        val exact = exactDay(data.absences, data.uid, date)
-        val winningMine = winningAbsence(data.absences, data.uid, date)
-        Column(
-            Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            if (winningMine != null && exact == null) {
-                Text(
-                    "На эти дни уже стоит «${absenceLabel(winningMine, data.myName)}» с ${winningMine.start.ruRange(winningMine.end)}.",
-                    style = MaterialTheme.typography.bodyLarge,
-                )
-                Button(
-                    onClick = { onEditAbsence(winningMine.id) },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                ) { Text("Изменить") }
-            } else {
-                Text("Отметить этот день", style = MaterialTheme.typography.titleSmall)
-                ChoiceButtons(
-                    options = listOf(
-                        "Могу" to (exact?.status == Availability.CAN),
-                        "Нет" to (exact?.status == Availability.CANNOT),
-                        "Может" to (exact?.status == Availability.MAYBE),
-                    ),
-                    onSelect = { index ->
-                        val status = listOf(Availability.CAN, Availability.CANNOT, Availability.MAYBE)[index]
-                        data.saveQuick(date, status)
-                    },
-                )
-            }
-            OutlinedButton(
-                onClick = { onCreateAbsence(date) },
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-            ) { Text("Несколько дней") }
         }
     }
 }

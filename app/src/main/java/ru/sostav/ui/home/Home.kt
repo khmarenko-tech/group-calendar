@@ -4,6 +4,8 @@ import android.Manifest
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
@@ -42,8 +44,10 @@ import ru.sostav.ui.calendar.CalendarScreen
 import ru.sostav.ui.concert.ConcertDetailScreen
 import ru.sostav.ui.concert.ConcertFormScreen
 import ru.sostav.ui.concert.ConcertListScreen
+import ru.sostav.ui.concert.YandexImportScreen
 import ru.sostav.ui.group.GroupScreen
 import ru.sostav.ui.inbox.InboxScreen
+import ru.sostav.ui.inbox.UpdatesBanner
 
 private val tabs = listOf(
     Tab("calendar", "Календарь", Icons.Filled.DateRange),
@@ -110,15 +114,23 @@ fun Home(profile: Profile, onSignOut: () -> Unit) {
             }
         }
     }) { padding ->
-        NavHost(
-            navController = nav,
-            startDestination = "calendar",
-            modifier = Modifier.padding(padding),
-        ) {
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            if (route != "inbox") {
+                UpdatesBanner(
+                    data = data,
+                    onOpenInbox = { nav.navigate("inbox") },
+                    onOpenConcert = { nav.navigate("concert/$it") },
+                )
+            }
+            NavHost(
+                navController = nav,
+                startDestination = "calendar",
+                modifier = Modifier.weight(1f),
+            ) {
             composable("calendar") {
                 CalendarScreen(
                     data = data,
-                    onOpenConcert = { nav.navigate("concert/$it") },
+                    onOpenConcert = { id, day -> nav.navigate("concert/$id?day=$day") },
                     onCreateConcert = { date -> nav.navigate("concert-create?date=$date") },
                     onCreateAbsence = { date -> nav.navigate("absence?id=&date=$date") },
                     onEditAbsence = { nav.navigate("absence?id=$it&date=") },
@@ -130,7 +142,15 @@ fun Home(profile: Profile, onSignOut: () -> Unit) {
                     data = data,
                     onOpen = { nav.navigate("concert/$it") },
                     onCreate = { nav.navigate("concert-create?date=") },
+                    onImport = { nav.navigate("yandex-import") },
                     onInbox = { nav.navigate("inbox") },
+                )
+            }
+            composable("yandex-import") {
+                YandexImportScreen(
+                    data = data,
+                    onBack = { nav.popBackStack() },
+                    onDone = { nav.popBackStack() },
                 )
             }
             composable("me") {
@@ -155,12 +175,16 @@ fun Home(profile: Profile, onSignOut: () -> Unit) {
                 )
             }
             composable(
-                route = "concert/{id}",
-                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+                route = "concert/{id}?day={day}",
+                arguments = listOf(
+                    navArgument("id") { type = NavType.StringType },
+                    navArgument("day") { type = NavType.StringType; defaultValue = "" },
+                ),
             ) { entry ->
                 ConcertDetailScreen(
                     data = data,
                     concertId = entry.arguments?.getString("id").orEmpty(),
+                    occurrenceDay = entry.arguments?.getString("day").orEmpty(),
                     onBack = { nav.popBackStack() },
                     onEdit = { nav.navigate("concert/$it/edit") },
                 )
@@ -209,6 +233,7 @@ fun Home(profile: Profile, onSignOut: () -> Unit) {
                     onDone = { nav.popBackStack() },
                 )
             }
+        }
         }
     }
 }

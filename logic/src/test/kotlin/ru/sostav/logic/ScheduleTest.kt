@@ -100,6 +100,87 @@ class ScheduleTest {
         assertEquals(listOf("k"), concertsOn(listOf(event), LocalDate.of(2026, 10, 17)).map { it.id })
     }
 
+    @Test
+    fun weeklyEventHitsSameWeekday() {
+        val rehearsal = concert("r", "Репетиция", LocalDate.of(2026, 10, 27), ConcertStatus.CONFIRMED)
+            .copy(repeat = RepeatPeriod.WEEKLY, repeatUntil = LocalDate.of(2026, 11, 17))
+        assertTrue(rehearsal.covers(LocalDate.of(2026, 10, 27)))
+        assertTrue(rehearsal.covers(LocalDate.of(2026, 11, 3)))
+        assertTrue(rehearsal.covers(LocalDate.of(2026, 11, 17)))
+        assertEquals(false, rehearsal.covers(LocalDate.of(2026, 10, 28)))
+        assertEquals(false, rehearsal.covers(LocalDate.of(2026, 11, 24)))
+        assertEquals(listOf("r"), activeConcertsInRange(listOf(rehearsal), LocalDate.of(2026, 11, 1), LocalDate.of(2026, 11, 10)).map { it.id })
+    }
+
+    @Test
+    fun monthlySkipsShortMonths() {
+        val payday = concert("p", "Оплата", LocalDate.of(2026, 1, 31), ConcertStatus.CONFIRMED)
+            .copy(repeat = RepeatPeriod.MONTHLY)
+        assertTrue(payday.covers(LocalDate.of(2026, 1, 31)))
+        assertEquals(false, payday.covers(LocalDate.of(2026, 2, 28)))
+        assertTrue(payday.covers(LocalDate.of(2026, 3, 31)))
+    }
+
+    @Test
+    fun yearlyEvent() {
+        val fest = concert("f", "Фест", LocalDate.of(2026, 8, 4), ConcertStatus.CONFIRMED)
+            .copy(repeat = RepeatPeriod.YEARLY)
+        assertTrue(fest.covers(LocalDate.of(2027, 8, 4)))
+        assertEquals(false, fest.covers(LocalDate.of(2027, 8, 5)))
+    }
+
+    @Test
+    fun seriesCutKeepsTheRest() {
+        val rehearsal = concert("r", "Репетиция", LocalDate.of(2026, 10, 6), ConcertStatus.CONFIRMED)
+            .copy(repeat = RepeatPeriod.WEEKLY, repeatUntil = LocalDate.of(2026, 11, 3))
+        val only = rehearsal.afterCut(LocalDate.of(2026, 10, 20), SeriesCut.ONLY_THIS)
+        assertEquals(false, only!!.covers(LocalDate.of(2026, 10, 20)))
+        assertTrue(only.covers(LocalDate.of(2026, 10, 13)))
+        assertTrue(only.covers(LocalDate.of(2026, 10, 27)))
+
+        val following = rehearsal.afterCut(LocalDate.of(2026, 10, 20), SeriesCut.FOLLOWING)
+        assertTrue(following!!.covers(LocalDate.of(2026, 10, 13)))
+        assertEquals(false, following.covers(LocalDate.of(2026, 10, 20)))
+        assertEquals(false, following.covers(LocalDate.of(2026, 10, 27)))
+
+        val previous = rehearsal.afterCut(LocalDate.of(2026, 10, 20), SeriesCut.PREVIOUS)
+        assertEquals(false, previous!!.covers(LocalDate.of(2026, 10, 6)))
+        assertEquals(false, previous.covers(LocalDate.of(2026, 10, 20)))
+        assertTrue(previous.covers(LocalDate.of(2026, 10, 27)))
+        assertEquals(null, rehearsal.afterCut(LocalDate.of(2026, 10, 6), SeriesCut.FOLLOWING))
+        assertEquals(null, rehearsal.afterCut(LocalDate.of(2026, 11, 3), SeriesCut.PREVIOUS))
+        assertEquals(null, rehearsal.afterCut(LocalDate.of(2026, 10, 20), SeriesCut.ALL))
+    }
+
+    @Test
+    fun official2027Calendar() {
+        assertEquals("Новогодние каникулы", officialDay(LocalDate.of(2027, 1, 1))?.title)
+        assertEquals(OfficialKind.HOLIDAY, officialDay(LocalDate.of(2027, 1, 2))?.kind)
+        assertEquals(OfficialKind.HOLIDAY, officialDay(LocalDate.of(2027, 1, 7))?.kind)
+        assertEquals("Выходной", officialDay(LocalDate.of(2027, 1, 9))?.title)
+        assertEquals(OfficialKind.SHORT, officialDay(LocalDate.of(2027, 2, 20))?.kind)
+        assertEquals(false, isOfficialDayOff(LocalDate.of(2027, 2, 20)))
+        assertEquals(OfficialKind.DAY_OFF, officialDay(LocalDate.of(2027, 2, 22))?.kind)
+        assertEquals("День защитника Отечества", officialDay(LocalDate.of(2027, 2, 23))?.title)
+        assertEquals(OfficialKind.DAY_OFF, officialDay(LocalDate.of(2027, 5, 3))?.kind)
+        assertEquals("День Победы", officialDay(LocalDate.of(2027, 5, 9))?.title)
+        assertEquals(OfficialKind.DAY_OFF, officialDay(LocalDate.of(2027, 5, 10))?.kind)
+        assertEquals(OfficialKind.DAY_OFF, officialDay(LocalDate.of(2027, 6, 14))?.kind)
+        assertEquals(OfficialKind.DAY_OFF, officialDay(LocalDate.of(2027, 11, 5))?.kind)
+        assertEquals(OfficialKind.DAY_OFF, officialDay(LocalDate.of(2027, 12, 31))?.kind)
+        assertEquals(OfficialKind.DAY_OFF, officialDay(LocalDate.of(2026, 12, 31))?.kind)
+        assertEquals(false, isOfficialDayOff(LocalDate.of(2027, 7, 6)))
+        assertTrue(isOfficialDayOff(LocalDate.of(2027, 7, 3)))
+    }
+
+    @Test
+    fun dailyStopsAtUntil() {
+        val camp = concert("c", "Сбор", LocalDate.of(2026, 10, 27), ConcertStatus.CONFIRMED)
+            .copy(repeat = RepeatPeriod.DAILY, repeatUntil = LocalDate.of(2026, 10, 29))
+        assertTrue(camp.covers(LocalDate.of(2026, 10, 29)))
+        assertEquals(false, camp.covers(LocalDate.of(2026, 10, 30)))
+    }
+
     private fun absence(
         id: String = "a",
         uid: String = ivan,

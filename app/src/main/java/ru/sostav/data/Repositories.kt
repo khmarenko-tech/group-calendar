@@ -21,6 +21,8 @@ import ru.sostav.logic.Availability
 import ru.sostav.logic.Concert
 import ru.sostav.logic.ConcertStatus
 import ru.sostav.logic.DayPart
+import ru.sostav.logic.RepeatPeriod
+import ru.sostav.logic.eventColorKeys
 import ru.sostav.logic.Rsvp
 import ru.sostav.logic.allDayParts
 import ru.sostav.logic.activeConcertsInRange
@@ -28,6 +30,7 @@ import ru.sostav.ui.dayMonth
 import ru.sostav.ui.wireAvailability
 import ru.sostav.ui.wireConcertStatus
 import ru.sostav.ui.wirePart
+import ru.sostav.ui.wireRepeat
 import ru.sostav.ui.wireRsvp
 import java.time.LocalDate
 import kotlin.random.Random
@@ -448,8 +451,22 @@ class ScheduleRepository {
             "note" to concert.note.trim(),
             "status" to concert.status.stored(),
             "createdBy" to concert.createdBy,
+            "repeat" to concert.repeat.stored(),
         )
         if (concert.id.isBlank()) data["createdAt"] = System.currentTimeMillis()
+        if (concert.importUid.isNotBlank()) data["importUid"] = concert.importUid
+        if (concert.repeat != RepeatPeriod.NONE && concert.repeatUntil != null) {
+            data["repeatUntil"] = concert.repeatUntil.toString()
+        } else {
+            data["repeatUntil"] = FieldValue.delete()
+        }
+        val color = concert.color.trim()
+        if (color in eventColorKeys) data["color"] = color else data["color"] = FieldValue.delete()
+        if (concert.exceptDates.isEmpty()) {
+            data["exceptDates"] = FieldValue.delete()
+        } else {
+            data["exceptDates"] = concert.exceptDates.map { it.toString() }.sorted()
+        }
         ref.set(data, SetOptions.merge()).await()
         return ref.id
     }
@@ -464,15 +481,25 @@ class ScheduleRepository {
             .set(mapOf("status" to status.stored(), "updatedAt" to System.currentTimeMillis())).await()
     }
 
-    suspend fun notifyNewConcert(groupId: String, concert: Concert, fromUid: String, memberUids: List<String>) {
-        if (concert.status == ConcertStatus.CANCELLED) return
+    suspend fun notifyNewConcert(
+        groupId: String,
+        concert: Concert,
+        fromUid: String,
+        fromName: String,
+        memberUids: List<String>,
+    ) {
         val place = listOf(concert.city, concert.venue).filter { it.isNotBlank() }.joinToString(", ")
+        val verb = if (concert.status == ConcertStatus.CANCELLED) "отменил" else "добавил"
         val body = buildString {
+            append(fromName)
+            append(" ")
+            append(verb)
+            append(" «")
             append(concert.title)
-            append(", ")
+            append("» · ")
             append(concertDateText(concert))
             if (place.isNotBlank()) {
-                append(", ")
+                append(" · ")
                 append(place)
             }
         }
@@ -484,12 +511,90 @@ class ScheduleRepository {
                     toUid = uid,
                     fromUid = fromUid,
                     groupId = groupId,
-                    title = "Новое событие",
+                    title = "Событие",
                     body = body,
                     concertId = concert.id,
                     type = "concert",
                 ),
             )
+        }
+        applyNotices(writes)
+    }
+
+    suspend fun notifyImportedConcerts(
+        groupId: String,
+        fromUid: String,
+        fromName: String,
+        memberUids: List<String>,
+        count: Int,
+    ) {
+        if (count <= 0) return
+        val body = "$fromName добавил события из Яндекс.Календаря: $count"
+        val id = "import_${System.currentTimeMillis()}"
+        val writes = memberUids.filter { it != fromUid }.map { uid ->
+            NoticeWrite(
+                uid = uid,
+                id = id,
+                payload = noticeMap(
+                    toUid = uid,
+                    fromUid = fromUid,
+                    groupId = groupId,
+                    title = "События",
+                    body = body,
+                    concertId = "",
+                    type = "import",
+                ),
+            )
+        }
+        applyNotices(writes)
+    }
+
+    suspend fun notifyMark(
+        groupId: String,
+        fromUid: String,
+        fromName: String,
+        memberUids: List<String>,
+        absence: Absence?,
+        noticeId: String,
+    ) {
+        val others = memberUids.filter { it != fromUid }
+        if (others.isEmpty()) return
+        val writes = if (absence == null) {
+            others.map { uid -> NoticeWrite(uid, noticeId, null) }
+        } else {
+            val dates = absenceDateText(absence)
+            val status = when (absence.status) {
+                Availability.CAN -> "Могу"
+                Availability.CANNOT -> "Нет"
+                Availability.MAYBE -> "Может"
+            }
+            val note = absence.note.trim()
+            val body = buildString {
+                append(fromName)
+                append(": ")
+                append(status)
+                append(" · ")
+                append(dates)
+                if (note.isNotBlank()) {
+                    append(" · ")
+                    append(note)
+                }
+            }
+            others.map { uid ->
+                NoticeWrite(
+                    uid = uid,
+                    id = noticeId,
+                    payload = noticeMap(
+                        toUid = uid,
+                        fromUid = fromUid,
+                        groupId = groupId,
+                        title = "Календарь",
+                        body = body,
+                        concertId = "",
+                        type = "mark",
+                    ),
+                )
+            }
         }
         applyNotices(writes)
     }
@@ -641,12 +746,33 @@ private fun DocumentSnapshot.toConcert(): Concert? {
         note = getString("note").orEmpty(),
         status = status,
         createdBy = getString("createdBy").orEmpty(),
+        importUid = getString("importUid").orEmpty(),
+        repeat = wireRepeat(getString("repeat")),
+        repeatUntil = getString("repeatUntil")?.let { runCatching { LocalDate.parse(it) }.getOrNull() },
+        color = getString("color").orEmpty().takeIf { it in eventColorKeys }.orEmpty(),
+        exceptDates = (get("exceptDates") as? List<*>).orEmpty().mapNotNull { raw ->
+            runCatching { LocalDate.parse(raw?.toString()) }.getOrNull()
+        }.toSet(),
     )
 }
 
 private fun concertDateText(concert: Concert): String {
     val start = concert.date.format(dayMonth)
-    return if (concert.lastDay == concert.date) start else "$start — ${concert.lastDay.format(dayMonth)}"
+    val range = if (concert.lastDay == concert.date) start else "$start — ${concert.lastDay.format(dayMonth)}"
+    if (concert.repeat == RepeatPeriod.NONE) return range
+    val period = when (concert.repeat) {
+        RepeatPeriod.DAILY -> "каждый день"
+        RepeatPeriod.WEEKLY -> "каждую неделю"
+        RepeatPeriod.MONTHLY -> "каждый месяц"
+        RepeatPeriod.YEARLY -> "каждый год"
+        RepeatPeriod.NONE -> ""
+    }
+    return "$range · $period"
+}
+
+private fun absenceDateText(absence: Absence): String {
+    val start = absence.start.format(dayMonth)
+    return if (absence.end == absence.start) start else "$start — ${absence.end.format(dayMonth)}"
 }
 
 private fun DocumentSnapshot.toNotice() = Notice(
@@ -686,6 +812,14 @@ private fun Rsvp.stored(): String = when (this) {
     Rsvp.GOING -> "going"
     Rsvp.NOT_GOING -> "not_going"
     Rsvp.MAYBE -> "maybe"
+}
+
+private fun RepeatPeriod.stored(): String = when (this) {
+    RepeatPeriod.NONE -> "none"
+    RepeatPeriod.DAILY -> "daily"
+    RepeatPeriod.WEEKLY -> "weekly"
+    RepeatPeriod.MONTHLY -> "monthly"
+    RepeatPeriod.YEARLY -> "yearly"
 }
 
 private fun validateCredentials(name: String, email: String, password: String, requireName: Boolean) {
