@@ -11,8 +11,8 @@ if (firebaseConfigured) {
     apply(plugin = "com.google.gms.google-services")
 }
 
-val releaseVersion = "1.0.10"
-val releaseCode = 11
+val releaseVersion = "1.0.11"
+val releaseCode = 12
 val keyPropertiesFile = rootProject.file("key.properties")
 val keyProperties = Properties()
 if (keyPropertiesFile.exists()) {
